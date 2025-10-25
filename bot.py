@@ -162,13 +162,19 @@ _UAS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
 ]
+
 BASE_HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    # było:
+    # "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    # daj priorytet JSON:
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.7,en;q=0.6",
     "Referer": "https://www.biblia.info.pl/",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
+
+
 
 async def http_get_text(url: str, timeout: int = 20):
     for attempt in range(3):
@@ -235,10 +241,13 @@ def _highlight(hay: str, needle: str) -> str:
         except re.error:
             pass
     return hay
+
+
+
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
     """
     Zwraca: (results, search_page_url)
-    results = [{ "ref": "J 3:16", "snippet": "PEŁNY tekst wersetu/framentu" }, ...]
+    results = [{ "ref": "J 3:16", "snippet": "<PEŁNY TEKST>" }, ...]
     """
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
@@ -269,9 +278,15 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
     last_status, last_body = None, ""
     import json
 
+    def _longest_string_record(rec: dict) -> str:
+        """Weź najdłuższy string z rekordu (bez słowników/księgi/indeksów)."""
+        ban = {"book", "chapter", "rozdzial", "verse", "verses", "werset", "wersety", "range"}
+        cand = [str(v) for k, v in rec.items() if k not in ban and isinstance(v, str)]
+        return max(cand, key=len).strip() if cand else ""
+
     for url in urls:
         status, body = await http_get_text(url, timeout=20)
-        last_status, last_body = status, (body or "")[:500].replace("\n", " ")
+        last_status, last_body = status, (body or "")[:800].replace("\n", " ")
         if status != 200 or not body:
             continue
 
@@ -282,93 +297,60 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
 
         out = []
 
-        # --- GŁÓWNY FORMAT: {"type":"Wyniki wyszukiwania", ..., "results":[ ... ]} ---
-        if isinstance(data, dict) and "results" in data and isinstance(data["results"], list):
-            for r in data["results"]:
-                if not isinstance(r, dict):
-                    continue
+        # --- GŁÓWNY FORMAT: dict z kluczem "results" ---
+        seq = []
+        if isinstance(data, dict):
+            if isinstance(data.get("results"), list):
+                seq = data["results"]
+            elif isinstance(data.get("hits"), list):
+                seq = data["hits"]
+            elif isinstance(data.get("data"), list):
+                seq = data["data"]
+            elif isinstance(data.get("items"), list):
+                seq = data["items"]
+        elif isinstance(data, list):
+            seq = data
 
-                book = r.get("book") or {}
-                b_disp = (
-                    book.get("abbreviation")
-                    or book.get("abbr")
-                    or book.get("short")
-                    or book.get("short_name")
-                    or book.get("name")
-                    or ""
-                ).strip()
+        for r in seq:
+            if not isinstance(r, dict):
+                continue
 
-                chapter = str(r.get("chapter") or r.get("rozdzial") or "").strip()
-                verse = (
-                    r.get("verse")
-                    or r.get("verses")
-                    or r.get("werset")
-                    or r.get("wersety")
-                    or r.get("range")
-                    or ""
-                )
-                verse = str(verse).strip().replace(",", ":")
+            book = r.get("book") or {}
+            b_disp = (
+                book.get("abbreviation") or book.get("abbr") or book.get("short")
+                or book.get("short_name") or book.get("name") or ""
+            ).strip()
 
-                # bierz PEŁNY tekst, nie ucinaj
-                txt = (
-                    r.get("text")
-                    or r.get("content")
-                    or r.get("snippet")
-                    or r.get("fragment")
-                    or r.get("tekst")
-                    or r.get("tresc")
-                    or ""
-                )
-                # strip HTML
-                txt = _strip_tags(str(txt)).strip()
+            chapter = str(r.get("chapter") or r.get("rozdzial") or "").strip()
+            verse = (
+                r.get("verse") or r.get("verses") or r.get("werset")
+                or r.get("wersety") or r.get("range") or ""
+            )
+            verse = str(verse).strip().replace(",", ":")
 
-                ref = f"{b_disp} {chapter}:{verse}" if b_disp and chapter and verse else ""
-                if ref and txt:
-                    out.append({"ref": ref, "snippet": txt})
+            # PEŁNY tekst: preferowane pola; jeśli pusto -> najdłuższy string z rekordu
+            txt = (
+                r.get("text") or r.get("content") or r.get("snippet") or
+                r.get("fragment") or r.get("tekst") or r.get("tresc") or r.get("html") or ""
+            )
+            if not txt:
+                txt = _longest_string_record(r)
+            txt = _strip_tags(str(txt)).strip()
 
-        # --- Fallback na inne możliwe kształty (hits/data/items) ---
-        if not out:
-            seq = []
-            if isinstance(data, dict):
-                for key in ("hits", "data", "items"):
-                    if isinstance(data.get(key), list):
-                        seq = data[key]
-                        break
-            elif isinstance(data, list):
-                seq = data
+            ref = f"{b_disp} {chapter}:{verse}" if b_disp and chapter and verse else ""
 
-            for h in seq:
-                if not isinstance(h, dict):
-                    continue
-                ref = (h.get("ref") or h.get("reference") or h.get("miejsce") or h.get("title") or "").strip()
-                if not ref:
-                    bname = (h.get("book_short") or h.get("skrot") or h.get("book") or h.get("ksiega") or "").strip()
-                    chapter = str(h.get("chapter") or h.get("rozdzial") or "").strip()
-                    verse = str(h.get("verse") or h.get("werset") or h.get("verses") or h.get("wersety") or "").strip()
-                    if bname and chapter and verse:
-                        ref = f"{bname} {chapter}:{verse.replace(',', ':')}"
-                txt = (
-                    h.get("text")
-                    or h.get("content")
-                    or h.get("snippet")
-                    or h.get("fragment")
-                    or h.get("tekst")
-                    or h.get("tresc")
-                    or ""
-                )
-                txt = _strip_tags(str(txt)).strip()
-                if ref and txt:
-                    out.append({"ref": ref, "snippet": txt})
+            if ref and txt:
+                out.append({"ref": ref, "snippet": txt})
 
         if out:
-            # NIE podcinamy — highlight tylko wizualny (opcjonalnie)
+            # Podświetl frazę w treści (nie ucinać)
             for h in out:
                 h["snippet"] = _highlight(h["snippet"], phrase)
             cache_set(ck, (out, search_page_url))
             return out, search_page_url
 
-    # Jeśli tu trafimy — API 200, ale format był całkiem inny
-    raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}).")
+    # W tym miejscu 200, ale nic nie rozpoznaliśmy — oddaj sensowny opis do logów
+    raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}). Body (800B): {last_body}")
 
 def _split_for_embeds(title: str, footer: str, lines: list[str], limit: int = 4000):
     """
