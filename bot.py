@@ -5,8 +5,7 @@ import html as html_lib
 import aiohttp
 import asyncio
 import random
-from urllib.parse import quote_plus
-from urllib.parse import quote
+from urllib.parse import quote_plus, quote
 
 import discord
 from discord.ext import commands
@@ -27,24 +26,24 @@ bot = commands.Bot(command_prefix=BOT_PREFIX, intents=INTENTS)
 # Pozwalamy nadpisać bazowy URL z ENV (np. gdy użyjesz własnego proxy/CF Worker)
 BIBLIA_INFO_BASE = os.getenv("BIBLIA_INFO_BASE", "https://www.biblia.info.pl/api")
 # Domena bez /api – do budowania linków do strony wyników
-BIBLIA_ORIGIN = re.sub(r'/api/?$', '', BIBLIA_INFO_BASE)
+BIBLIA_ORIGIN = re.sub(r"/api/?$", "", BIBLIA_INFO_BASE)
 
 # ---- PRZEKŁADY ----
 BIBLIA_INFO_CODES = {
-    "bw": "bw",      # Biblia Warszawska
-    "bg": "bg",      # Biblia Gdańska
-    "ubg": "ubg",    # Uwspółcześniona Biblia Gdańska
-    "bt": "bt",      # Biblia Tysiąclecia
-    "bp": "bp",      # Biblia Poznańska
-    "bz": "bz",      # Biblia Zaremby
-    "np": "np",      # Nowa Przymierza (Ewangeliczna)
-    "pd": "pd",      # Przekład Dosłowny
-    "npw": "npw",    # Nowy Przekład Warszawski
-    "eib": "eib",    # Ewangeliczna Instytutu Biblijnego
-    "snp": "snp",    # Słowo Nowego Przymierza
-    "tor": "tor",    # Biblia Toruńska
-    "wb": "wb",      # Biblia Warszawsko-Brytyjska
-    "nb": "ubg",     # alias: Nowa Biblia Gdańska = UBG
+    "bw": "bw",
+    "bg": "bg",
+    "ubg": "ubg",
+    "bt": "bt",
+    "bp": "bp",
+    "bz": "bz",
+    "np": "np",
+    "pd": "pd",
+    "npw": "npw",
+    "eib": "eib",
+    "snp": "snp",
+    "tor": "tor",
+    "wb": "wb",
+    "nb": "ubg",  # alias
 }
 
 # ---- SKRÓTY KSIĄG (ST + NT) -> slug w API ----
@@ -86,7 +85,7 @@ BOOK_ALIASES = {k.lower(): v for k, v in PRIMARY_BOOK_SLUG.items()}
 BOOK_ALIASES.update({
     "mt": "mat", "mateusz": "mat",
     "mk": "mar", "marka": "mar",
-    "lk": "luk", "łk": "luk", "łuk": "luk", "luk": "luk",
+    "lk": "luk", "łk": "luk", "łuk": "luk",
     "j": "jan", "jan": "jan",
     "ap": "obj", "apo": "obj", "apokalipsa": "obj",
 })
@@ -100,10 +99,10 @@ BOOK_SLUG_VARIANTS = {
     "obj": ["obj", "apokal", "ap"],
 }
 
-REF_RE = re.compile(r'^\s*([^\d]+)\s+(\d+):(\d+(?:-\d+)?)\s*$', re.IGNORECASE)
+REF_RE = re.compile(r"^\s*([^\d]+)\s+(\d+):(\d+(?:-\d+)?)\s*$", re.IGNORECASE)
 
 # Prosty cache odpowiedzi (na 5 min)
-_cache = {}
+_cache: dict[str, dict] = {}
 CACHE_TTL = 300
 
 def cache_get(k: str):
@@ -115,7 +114,8 @@ def cache_get(k: str):
         return None
     return v["d"]
 
-def cache_set(k: str, d): _cache[k] = {"t": time.time(), "d": d}
+def cache_set(k: str, d):
+    _cache[k] = {"t": time.time(), "d": d}
 
 def parse_ref(ref: str):
     """'J 3:16' -> ('jan', '3', '16') – case-insensitive, z aliasami."""
@@ -132,12 +132,12 @@ DIV_VERSE_RE = re.compile(r'(?is)<div[^>]*class="verse-text"[^>]*>(.*?)</div>')
 SPAN_NUM_RE = re.compile(r'(?is)<span[^>]*class="verse-number"[^>]*>(\d+)</span>')
 
 def _strip_tags(html: str) -> str:
-    s = re.sub(r'(?is)<style.*?>.*?</style>', '', html)
-    s = re.sub(r'(?is)<script.*?>.*?</script>', '', s)
-    s = s.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
-    s = re.sub(r'(?is)<[^>]+>', '', s)
-    s = re.sub(r'\r?\n[ \t]*\r?\n+', '\n', s)
-    s = re.sub(r'[ \t]+', ' ', s)
+    s = re.sub(r"(?is)<style.*?>.*?</style>", "", html)
+    s = re.sub(r"(?is)<script.*?>.*?</script>", "", s)
+    s = s.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+    s = re.sub(r"(?is)<[^>]+>", "", s)
+    s = re.sub(r"\r?\n[ \t]*\r?\n+", "\n", s)
+    s = re.sub(r"[ \t]+", " ", s)
     return html_lib.unescape(s).strip()
 
 def biblia_html_to_text(full_html: str) -> str:
@@ -227,7 +227,7 @@ def _cache_key_search_api(trans: str, phrase: str, limit: int, page: int) -> str
 def _highlight(hay: str, needle: str) -> str:
     if not hay or not needle:
         return hay
-    words = [w for w in re.split(r'\s+', needle.strip()) if w]
+    words = [w for w in re.split(r"\s+", needle.strip()) if w]
     def repl(m): return f"**{m.group(0)}**"
     for w in sorted(words, key=len, reverse=True):
         try:
@@ -235,7 +235,6 @@ def _highlight(hay: str, needle: str) -> str:
         except re.error:
             pass
     return hay
-
 
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
     """
@@ -259,13 +258,11 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
         return cached
 
     code = BIBLIA_INFO_CODES[trans]
-    # <- KLUCZ: kodujemy frazę jako SEGMENT ŚCIEŻKI
-    q_path = quote(phrase, safe="")   # wszystko percent-encode
+    q_path = quote(phrase, safe="")  # query jako segment ścieżki
     API_BASE = BIBLIA_INFO_BASE
     ORIGIN = BIBLIA_ORIGIN
     search_page_url = f"{ORIGIN}/szukaj.php?st={quote_plus(phrase)}&tl={code}&p={page}"
 
-    # <- KLUCZ: query w ścieżce, stronicowanie w query string
     candidates = [
         f"{API_BASE}/search/{code}/{q_path}?page={page}&limit={limit}",
         f"{API_BASE}/szukaj/{code}/{q_path}?page={page}&limit={limit}",
@@ -298,17 +295,13 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
                     continue
 
                 # --- referencja ---
-                ref = (
-                    (h.get("ref") or h.get("reference") or h.get("miejsce") or h.get("title") or "").strip()
-                )
+                ref = (h.get("ref") or h.get("reference") or h.get("miejsce") or h.get("title") or "").strip()
 
                 # próbuj złożyć ref z elementów, jeśli brak
                 if not ref:
                     book = (h.get("book") or h.get("ksiega") or h.get("nazwa_ksiegi") or "").strip()
-                    # czasem bywa skrót księgi
                     book_short = (h.get("book_short") or h.get("skrot") or "").strip()
                     chapter = str(h.get("chapter") or h.get("rozdzial") or "").strip()
-                    # verse/verses, w PL bywa "werset" / "wersety"
                     verse = str(h.get("verse") or h.get("werset") or "").strip()
                     verses = str(h.get("verses") or h.get("wersety") or "").strip()
                     bname = book_short or book
@@ -316,21 +309,20 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
                     if bname and chapter and vpart:
                         ref = f"{bname} {chapter}:{vpart}"
 
-                # doprowadź format J 3,16 -> J 3:16
+                # J 3,16 -> J 3:16
                 if ref and "," in ref and ":" not in ref:
                     ref = ref.replace(",", ":")
 
                 # --- tekst/snippet ---
                 txt = (
-                    (h.get("snippet") or h.get("text") or h.get("content") or
-                     h.get("fragment") or h.get("tekst") or h.get("tresc") or "").strip()
-                )
+                    h.get("snippet") or h.get("text") or h.get("content") or
+                    h.get("fragment") or h.get("tekst") or h.get("tresc") or ""
+                ).strip()
 
-                # czasem treść jest pod innym kluczem, spróbuj wyłuskać najdłuższy string
                 if not txt:
-                    candidates = [v for v in h.values() if isinstance(v, str)]
-                    if candidates:
-                        txt = max(candidates, key=len).strip()
+                    candidates_txt = [v for v in h.values() if isinstance(v, str)]
+                    if candidates_txt:
+                        txt = max(candidates_txt, key=len).strip()
 
                 if ref and txt:
                     out.append({"ref": ref, "snippet": _strip_tags(txt)})
@@ -405,6 +397,10 @@ async def fraza(ctx, *, arg: str):
         await ctx.reply(f"❌ Błąd wyszukiwania: {e}")
         return
 
+    if not hits:
+        await ctx.reply("Brak wyników.")
+        return
+
     lines = []
     for h in hits:
         ref = h.get("ref", "—")
@@ -417,7 +413,7 @@ async def fraza(ctx, *, arg: str):
         title=f"Wyniki („{phrase}”) — {trans.upper()} — strona {page}",
         description="\n\n".join(lines)[:4000]
     )
-    embed.url = search_url  # klik do pełnej strony z wynikami
+    embed.url = search_url
     embed.set_footer(text="Źródło: biblia.info.pl (API search)")
     await ctx.reply(embed=embed)
 
