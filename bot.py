@@ -237,9 +237,8 @@ def _highlight(hay: str, needle: str) -> str:
     return hay
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
     """
-    Wyszukiwanie frazy przez oficjalne API biblia.info.pl (i fallback /szukaj).
     Zwraca: (results, search_page_url)
-    results = [{ "ref": "J 3:16", "snippet": "Tak bowiem Bóg..." }, ...]
+    results = [{ "ref": "J 3:16", "snippet": "PEŁNY tekst wersetu/framentu" }, ...]
     """
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
@@ -262,83 +261,85 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
     ORIGIN = BIBLIA_ORIGIN
     search_page_url = f"{ORIGIN}/szukaj.php?st={quote_plus(phrase)}&tl={code}&p={page}"
 
-    candidates = [
+    urls = [
         f"{API_BASE}/search/{code}/{q_path}?page={page}&limit={limit}",
         f"{API_BASE}/szukaj/{code}/{q_path}?page={page}&limit={limit}",
     ]
 
     last_status, last_body = None, ""
-    for url in candidates:
+    import json
+
+    for url in urls:
         status, body = await http_get_text(url, timeout=20)
-        last_status, last_body = status, (body or "")[:200].replace("\n", " ")
+        last_status, last_body = status, (body or "")[:500].replace("\n", " ")
         if status != 200 or not body:
             continue
 
         try:
-            import json
             data = json.loads(body)
+        except Exception:
+            continue
 
-            # 1) „Oficjalny” format: {"type":"Wyniki wyszukiwania", ... "results":[ {...} ]}
-            if isinstance(data, dict) and data.get("type", "").lower().startswith("wyniki"):
-                seq = data.get("results") or []
-                out = []
-                for r in seq:
-                    if not isinstance(r, dict):
-                        continue
+        out = []
 
-                    # Księga: krótsza forma (abbr/short) lub pełna nazwa
-                    book_block = r.get("book") or {}
-                    b_short = (book_block.get("abbr") or book_block.get("short") or
-                               book_block.get("short_name") or "").strip()
-                    b_name = (book_block.get("name") or book_block.get("nazwa") or "").strip()
-                    b_disp = b_short or b_name or ""
+        # --- GŁÓWNY FORMAT: {"type":"Wyniki wyszukiwania", ..., "results":[ ... ]} ---
+        if isinstance(data, dict) and "results" in data and isinstance(data["results"], list):
+            for r in data["results"]:
+                if not isinstance(r, dict):
+                    continue
 
-                    # Rozdział / wers(y)
-                    chapter = str(r.get("chapter") or r.get("rozdzial") or "").strip()
-                    verse = (r.get("verse") or r.get("werset") or
-                             r.get("verses") or r.get("wersety") or "")
-                    verse = str(verse).strip()
+                book = r.get("book") or {}
+                b_disp = (
+                    book.get("abbreviation")
+                    or book.get("abbr")
+                    or book.get("short")
+                    or book.get("short_name")
+                    or book.get("name")
+                    or ""
+                ).strip()
 
-                    # Tekst / fragment
-                    txt = (
-                        r.get("snippet") or r.get("text") or r.get("content") or
-                        r.get("fragment") or r.get("tekst") or r.get("tresc") or ""
-                    )
-                    txt = _strip_tags(str(txt))
+                chapter = str(r.get("chapter") or r.get("rozdzial") or "").strip()
+                verse = (
+                    r.get("verse")
+                    or r.get("verses")
+                    or r.get("werset")
+                    or r.get("wersety")
+                    or r.get("range")
+                    or ""
+                )
+                verse = str(verse).strip().replace(",", ":")
 
-                    # Złóż referencję, np. "J 3:16" albo "Rdz 1:1-3"
-                    ref = ""
-                    if b_disp and chapter and verse:
-                        # Zamień ewentualny separator przecinek->dwukropek
-                        verse_clean = verse.replace(",", ":")
-                        ref = f"{b_disp} {chapter}:{verse_clean}"
+                # bierz PEŁNY tekst, nie ucinaj
+                txt = (
+                    r.get("text")
+                    or r.get("content")
+                    or r.get("snippet")
+                    or r.get("fragment")
+                    or r.get("tekst")
+                    or r.get("tresc")
+                    or ""
+                )
+                # strip HTML
+                txt = _strip_tags(str(txt)).strip()
 
-                    if ref and txt:
-                        out.append({"ref": ref, "snippet": txt})
+                ref = f"{b_disp} {chapter}:{verse}" if b_disp and chapter and verse else ""
+                if ref and txt:
+                    out.append({"ref": ref, "snippet": txt})
 
-                if out:
-                    # Podświetlenie frazy
-                    for h in out:
-                        h["snippet"] = _highlight(h["snippet"], phrase)
-                    cache_set(ck, (out, search_page_url))
-                    return out, search_page_url
-
-            # 2) Ogólne fallbacki: inne możliwe klucze „hits” / „data” / „results”
+        # --- Fallback na inne możliwe kształty (hits/data/items) ---
+        if not out:
             seq = []
             if isinstance(data, dict):
-                for key in ("hits", "data", "results", "items"):
+                for key in ("hits", "data", "items"):
                     if isinstance(data.get(key), list):
                         seq = data[key]
                         break
             elif isinstance(data, list):
                 seq = data
 
-            out = []
             for h in seq:
                 if not isinstance(h, dict):
                     continue
-
-                # ref z gotowego pola lub złożony z elementów
                 ref = (h.get("ref") or h.get("reference") or h.get("miejsce") or h.get("title") or "").strip()
                 if not ref:
                     bname = (h.get("book_short") or h.get("skrot") or h.get("book") or h.get("ksiega") or "").strip()
@@ -346,28 +347,47 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
                     verse = str(h.get("verse") or h.get("werset") or h.get("verses") or h.get("wersety") or "").strip()
                     if bname and chapter and verse:
                         ref = f"{bname} {chapter}:{verse.replace(',', ':')}"
-
                 txt = (
-                    h.get("snippet") or h.get("text") or h.get("content") or
-                    h.get("fragment") or h.get("tekst") or h.get("tresc") or ""
+                    h.get("text")
+                    or h.get("content")
+                    or h.get("snippet")
+                    or h.get("fragment")
+                    or h.get("tekst")
+                    or h.get("tresc")
+                    or ""
                 )
-                txt = _strip_tags(str(txt))
-
+                txt = _strip_tags(str(txt)).strip()
                 if ref and txt:
                     out.append({"ref": ref, "snippet": txt})
 
-            if out:
-                for h in out:
-                    h["snippet"] = _highlight(h["snippet"], phrase)
-                cache_set(ck, (out, search_page_url))
-                return out, search_page_url
+        if out:
+            # NIE podcinamy — highlight tylko wizualny (opcjonalnie)
+            for h in out:
+                h["snippet"] = _highlight(h["snippet"], phrase)
+            cache_set(ck, (out, search_page_url))
+            return out, search_page_url
 
-        except Exception:
-            # spróbuj następną ścieżkę z candidates
-            continue
+    # Jeśli tu trafimy — API 200, ale format był całkiem inny
+    raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}).")
 
-    raise RuntimeError(f"Brak wyników lub błąd wyszukiwania (status {last_status}). Odpowiedź: {last_body!r}")
-
+def _split_for_embeds(title: str, footer: str, lines: list[str], limit: int = 4000):
+    """
+    Dzieli listę linii na porcje <= limit dla Discord embed.description.
+    Zwraca listę słowników {title, description, footer}.
+    """
+    chunks = []
+    buf = ""
+    for line in lines:
+        # każdą linię zakończamy podwójną nową linią dla czytelności
+        add = (line.strip() + "\n\n")
+        if len(buf) + len(add) > limit and buf:
+            chunks.append({"title": title, "description": buf.rstrip(), "footer": footer})
+            buf = add
+        else:
+            buf += add
+    if buf:
+        chunks.append({"title": title, "description": buf.rstrip(), "footer": footer})
+    return chunks
 
 # --------------- komendy ---------------
 
@@ -426,30 +446,37 @@ async def fraza(ctx, *, arg: str):
         return
 
     try:
-        hits, search_url = await biblia_info_search_phrase_api(trans, phrase, limit=5, page=page)
+        hits, search_url = await biblia_info_search_phrase_api(trans, phrase, limit=10, page=page)
     except Exception as e:
-        await ctx.reply(f"❌ Błąd wyszukiwania: {e}")
+        # Czytelny komunikat dla usera; pełne szczegóły w logach
+        await ctx.reply("Brak wyników albo problem z wyszukiwarką. Spróbuj inne parametry lub za chwilę.")
+        print(f"[fraza] error: {type(e).__name__}: {e}", flush=True)
         return
 
     if not hits:
         await ctx.reply("Brak wyników.")
         return
 
+    # Buduj PEŁNE linie (bez limitu 200 znaków)
     lines = []
     for h in hits:
         ref = h.get("ref", "—")
-        snip = _highlight((h.get("snippet") or "").strip(), phrase)
-        if len(snip) > 200:
-            snip = snip[:197] + "…"
+        snip = (h.get("snippet") or "").strip()
+        # niczego nie ucinamy tutaj — Discord ma 4096 na opis, więc podzielimy na kilka embedów
         lines.append(f"**{ref}** — {snip}")
 
-    embed = discord.Embed(
-        title=f"Wyniki („{phrase}”) — {trans.upper()} — strona {page}",
-        description="\n\n".join(lines)[:4000]
-    )
-    embed.url = search_url
-    embed.set_footer(text="Źródło: biblia.info.pl (API search)")
-    await ctx.reply(embed=embed)
+    title = f"Wyniki („{phrase}”) — {trans.upper()} — strona {page}"
+    footer = "Źródło: biblia.info.pl (API search)"
+    chunks = _split_for_embeds(title, footer, lines, limit=4000)
+
+    # Wyślij 1..N embedów, każdy z częścią wyników
+    first = True
+    for i, ch in enumerate(chunks, start=1):
+        embed = discord.Embed(title=ch["title"], description=ch["description"])
+        embed.url = search_url if first else discord.Embed.Empty
+        embed.set_footer(text=ch["footer"])
+        await ctx.reply(embed=embed)
+        first = False
 
 @bot.command()
 async def ping(ctx):
