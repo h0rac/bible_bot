@@ -11,14 +11,13 @@ import discord
 from discord.ext import commands
 
 # --------------- konfiguracja ---------------
-# Na lokalnym dev wczyta .env, w chmurze (Railway/Render) zmienne są już w środowisku.
 if os.path.exists(".env"):
     from dotenv import load_dotenv
     load_dotenv()
 
 BOT_PREFIX = "!"
 INTENTS = discord.Intents.default()
-INTENTS.message_content = True   # kluczowe, by bot widział treść komend
+INTENTS.message_content = True
 INTENTS.guilds = True
 
 bot = commands.Bot(command_prefix=BOT_PREFIX, intents=INTENTS)
@@ -164,17 +163,12 @@ _UAS = [
 ]
 
 BASE_HEADERS = {
-    # było:
-    # "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    # daj priorytet JSON:
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.7,en;q=0.6",
     "Referer": "https://www.biblia.info.pl/",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
-
-
 
 async def http_get_text(url: str, timeout: int = 20):
     for attempt in range(3):
@@ -226,7 +220,7 @@ async def biblia_info_get_passage(trans: str, ref: str) -> str:
 
     raise RuntimeError(f"Błąd API ({last_status}). Odpowiedź: {last_snippet!r}")
 
-# ---------- WYSZUKIWANIE (oficjalne API: /api/search, fallback /api/szukaj) ----------
+# ---------- WYSZUKIWANIE ----------
 def _cache_key_search_api(trans: str, phrase: str, limit: int, page: int) -> str:
     return f"searchapi|{trans}|{phrase.strip().lower()}|{limit}|{page}"
 
@@ -241,6 +235,40 @@ def _highlight(hay: str, needle: str) -> str:
         except re.error:
             pass
     return hay
+
+# --- ekstra: rozpakowanie „pseudo-JSON” z tekstami wersetów ---
+_TEXT_KEY_RE = re.compile(r"""(?is)(["']text["']\s*:\s*["'])(.+?)(["'])""")
+
+def _coerce_text_block(raw):
+    """
+    Zwraca czysty tekst:
+    - list/dict -> zlepione "nr. tekst"
+    - string będący reprezentacją listy/dict -> wyciągnięte wszystkie 'text'
+    - zwykły string -> jak jest
+    """
+    if isinstance(raw, list):
+        parts = []
+        for it in raw:
+            if isinstance(it, dict):
+                vno = str(it.get("verse") or "")
+                vtx = str(it.get("text") or "")
+                if vtx:
+                    parts.append(f"{vno}. {vtx}" if vno else vtx)
+            elif isinstance(it, str):
+                parts.append(it)
+        return " ".join(parts)
+
+    if isinstance(raw, dict):
+        vno = str(raw.get("verse") or "")
+        vtx = str(raw.get("text") or "")
+        return (f"{vno}. {vtx}" if vno and vtx else vtx).strip()
+
+    if isinstance(raw, str) and "[" in raw and "text" in raw and ("{" in raw or "}" in raw):
+        texts = [m.group(2) for m in _TEXT_KEY_RE.finditer(raw)]
+        if texts:
+            return " ".join(texts)
+
+    return "" if raw is None else str(raw)
 
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
     """
@@ -277,7 +305,6 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
     import json
 
     def _longest_string_record(rec: dict) -> str:
-        """Weź najdłuższy string z rekordu (bez słowników/księgi/indeksów)."""
         ban = {"book", "chapter", "rozdzial", "verse", "verses", "werset", "wersety", "range"}
         cand = [str(v) for k, v in rec.items() if k not in ban and isinstance(v, str)]
         return max(cand, key=len).strip() if cand else ""
@@ -326,36 +353,21 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             )
             verse = str(verse).strip().replace(",", ":")
 
-            # Obsługa przypadku, gdy "text" lub inne pola zawierają listę/obiekt z wersetami
             raw_text = (
                 r.get("text") or r.get("content") or r.get("snippet") or
                 r.get("fragment") or r.get("tekst") or r.get("tresc") or r.get("html") or ""
             )
 
-            if isinstance(raw_text, list):
-                parts = []
-                for item in raw_text:
-                    if isinstance(item, dict):
-                        verse_no = str(item.get("verse") or "")
-                        verse_txt = str(item.get("text") or "")
-                        if verse_txt:
-                            parts.append(f"{verse_no}. {verse_txt}" if verse_no else verse_txt)
-                    elif isinstance(item, str):
-                        parts.append(item)
-                txt = " ".join(parts)
-            else:
-                txt = str(raw_text)
-
+            txt = _coerce_text_block(raw_text)
             if not txt:
                 txt = _longest_string_record(r)
 
             txt = _strip_tags(txt).strip()
-            ref = f"{b_disp} {chapter}:{verse}" if b_disp and chapter and verse else ""
+            ref = f"{(b_disp or '').upper()} {chapter}:{verse}" if b_disp and chapter and verse else ""
 
             if ref and txt:
                 out.append({"ref": ref, "snippet": txt})
 
-        # <-- UWAGA: ten blok musi być POZA pętlą for r in seq
         if out:
             for h in out:
                 h["snippet"] = _highlight(h["snippet"], phrase)
@@ -364,17 +376,11 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
 
     raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}). Body (800B): {last_body}")
 
-
-
 def _split_for_embeds(title: str, footer: str, lines: list[str], limit: int = 4000):
-    """
-    Dzieli listę linii na porcje <= limit dla Discord embed.description.
-    Zwraca listę słowników {title, description, footer}.
-    """
+    """Dzieli listę linii na porcje <= limit dla Discord embed.description."""
     chunks = []
     buf = ""
     for line in lines:
-        # każdą linię zakończamy podwójną nową linią dla czytelności
         add = (line.strip() + "\n\n")
         if len(buf) + len(add) > limit and buf:
             chunks.append({"title": title, "description": buf.rstrip(), "footer": footer})
@@ -444,7 +450,6 @@ async def fraza(ctx, *, arg: str):
     try:
         hits, search_url = await biblia_info_search_phrase_api(trans, phrase, limit=10, page=page)
     except Exception as e:
-        # Czytelny komunikat dla usera; pełne szczegóły w logach
         await ctx.reply("Brak wyników albo problem z wyszukiwarką. Spróbuj inne parametry lub za chwilę.")
         print(f"[fraza] error: {type(e).__name__}: {e}", flush=True)
         return
@@ -453,26 +458,25 @@ async def fraza(ctx, *, arg: str):
         await ctx.reply("Brak wyników.")
         return
 
-    # Buduj PEŁNE linie (bez limitu 200 znaków)
+    # Buduj PEŁNE linie (bez skracania); Discord limitujemy przez dzielenie embedów
     lines = []
     for h in hits:
         ref = h.get("ref", "—")
         snip = (h.get("snippet") or "").strip()
-        # niczego nie ucinamy tutaj — Discord ma 4096 na opis, więc podzielimy na kilka embedów
         lines.append(f"**{ref}** — {snip}")
 
     title = f"Wyniki („{phrase}”) — {trans.upper()} — strona {page}"
     footer = "Źródło: biblia.info.pl (API search)"
     chunks = _split_for_embeds(title, footer, lines, limit=4000)
 
-    # Wyślij 1..N embedów, każdy z częścią wyników
     first = True
-    for i, ch in enumerate(chunks, start=1):
+    for ch in chunks:
         embed = discord.Embed(title=ch["title"], description=ch["description"])
-        embed.url = search_url if first else discord.Embed.Empty
+        if first:
+            embed.url = search_url
+            first = False
         embed.set_footer(text=ch["footer"])
         await ctx.reply(embed=embed)
-        first = False
 
 @bot.command()
 async def ping(ctx):
