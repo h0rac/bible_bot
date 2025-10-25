@@ -242,8 +242,6 @@ def _highlight(hay: str, needle: str) -> str:
             pass
     return hay
 
-
-
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
     """
     Zwraca: (results, search_page_url)
@@ -328,29 +326,45 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             )
             verse = str(verse).strip().replace(",", ":")
 
-            # PEŁNY tekst: preferowane pola; jeśli pusto -> najdłuższy string z rekordu
-            txt = (
+            # Obsługa przypadku, gdy "text" lub inne pola zawierają listę/obiekt z wersetami
+            raw_text = (
                 r.get("text") or r.get("content") or r.get("snippet") or
                 r.get("fragment") or r.get("tekst") or r.get("tresc") or r.get("html") or ""
             )
+
+            if isinstance(raw_text, list):
+                parts = []
+                for item in raw_text:
+                    if isinstance(item, dict):
+                        verse_no = str(item.get("verse") or "")
+                        verse_txt = str(item.get("text") or "")
+                        if verse_txt:
+                            parts.append(f"{verse_no}. {verse_txt}" if verse_no else verse_txt)
+                    elif isinstance(item, str):
+                        parts.append(item)
+                txt = " ".join(parts)
+            else:
+                txt = str(raw_text)
+
             if not txt:
                 txt = _longest_string_record(r)
-            txt = _strip_tags(str(txt)).strip()
 
+            txt = _strip_tags(txt).strip()
             ref = f"{b_disp} {chapter}:{verse}" if b_disp and chapter and verse else ""
 
             if ref and txt:
                 out.append({"ref": ref, "snippet": txt})
 
+        # <-- UWAGA: ten blok musi być POZA pętlą for r in seq
         if out:
-            # Podświetl frazę w treści (nie ucinać)
             for h in out:
                 h["snippet"] = _highlight(h["snippet"], phrase)
             cache_set(ck, (out, search_page_url))
             return out, search_page_url
 
-    # W tym miejscu 200, ale nic nie rozpoznaliśmy — oddaj sensowny opis do logów
     raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}). Body (800B): {last_body}")
+
+
 
 def _split_for_embeds(title: str, footer: str, lines: list[str], limit: int = 4000):
     """
