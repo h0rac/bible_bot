@@ -46,6 +46,24 @@ BIBLIA_INFO_CODES = {
     "nb": "ubg",  # alias
 }
 
+# Przyjazne nazwy do nagłówka
+TRANSLATION_NAMES = {
+    "bw":  "Biblia Warszawska",
+    "bg":  "Biblia Gdańska",
+    "ubg": "Uwspółcześniona Biblia Gdańska",
+    "bt":  "Biblia Tysiąclecia",
+    "bp":  "Biblia Poznańska",
+    "bz":  "Biblia Zaremby",
+    "np":  "Nowy Przekład",
+    "pd":  "Biblia Paulistów",
+    "npw": "Nowy Przekład Współczesny",
+    "eib": "EIB",
+    "snp": "Przekład Literacki (SNP)",
+    "tor": "Torah (PL)",
+    "wb":  "Warszawsko-Praska",
+    "nb":  "Uwspółcześniona Biblia Gdańska",
+}
+
 # ---- SKRÓTY KSIĄG (ST + NT) -> slug w API ----
 PRIMARY_BOOK_SLUG = {
     # NT
@@ -239,10 +257,7 @@ _TEXT_KEY_RE = re.compile(r'(?is)(["\'“”]text["\'“”]\s*:\s*["\'“”])(
 
 def _coerce_text_block(raw) -> str:
     """
-    Zwraca czysty tekst (bez numerów wersetów):
-    - list/dict -> skleja tylko pola 'text'
-    - string z reprezentacją listy/dict -> spróbuj literal_eval; jak nie, wyciągnij wszystkie 'text' regexem
-    - zwykły string -> jak jest
+    Zwraca czysty tekst (bez numerów wersetów).
     """
     if isinstance(raw, list):
         parts = []
@@ -270,20 +285,22 @@ def _coerce_text_block(raw) -> str:
     return "" if raw is None else str(raw)
 
 def _is_texty(s: str) -> bool:
-    """Odcedza wartości typu '28' itp. – ma być coś przypominającego zdanie."""
     if not s:
         return False
     s = s.strip()
     return len(s) >= 5 and re.search(r"[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]", s) is not None
 
 def _extract_all_texts_from_any(raw: str) -> str:
-    """Awaryjnie wydobywa WSZYSTKIE pola 'text' z dowolnego łańcucha."""
     if not isinstance(raw, str):
         return ""
     parts = [m.group(2) for m in _TEXT_KEY_RE.finditer(raw)]
     return " ".join([p for p in parts if p])
 
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
+    """
+    Zwraca: (hits, search_url, meta)
+    meta = {total, start, end, page, limit}
+    """
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
 
@@ -292,7 +309,8 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
         raise ValueError("Podaj frazę do wyszukania.")
 
     page = max(1, int(page))
-    limit = max(1, min(10, int(limit)))
+    # większy sensowny limit na stronę
+    limit = max(1, min(25, int(limit)))
 
     ck = _cache_key_search_api(trans, phrase, limit, page)
     cached = cache_get(ck)
@@ -318,7 +336,16 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
         cand = [str(v) for k, v in rec.items() if k not in ban and isinstance(v, str)]
         return max(cand, key=len).strip() if cand else ""
 
+    def _to_int(x):
+        try:
+            return int(str(x).strip())
+        except Exception:
+            return None
+
     out = []
+    total_all = None
+    range_start = None
+    range_end = None
 
     for url in urls:
         status, body = await http_get_text(url, timeout=20)
@@ -330,6 +357,17 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             data = json.loads(body)
         except Exception:
             continue
+
+        # łączna liczba wyników
+        if isinstance(data, dict):
+            for k in ("all_results", "total_results", "total", "hits_total", "count"):
+                if k in data and total_all is None:
+                    total_all = _to_int(data.get(k))
+            # zakres zwrócony przez API
+            rstr = (data.get("results_range") or data.get("range") or "").strip()
+            m = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", str(rstr))
+            if m:
+                range_start, range_end = int(m.group(1)), int(m.group(2))
 
         # wybór tablicy wyników
         seq = []
@@ -345,16 +383,14 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             if not isinstance(r, dict):
                 continue
 
-            # --- księga / rozdział ---
+            # --- księga / rozdział / werset ---
             book = r.get("book") or {}
             b_disp = (
                 book.get("abbreviation") or book.get("abbr") or book.get("short")
                 or book.get("short_name") or book.get("name") or ""
             ).strip().upper()
-
             chapter = str(r.get("chapter") or r.get("rozdzial") or "").strip()
 
-            # --- werset (może być listą w stringu -> weź pierwszą liczbę) ---
             verse_raw = (
                 r.get("verse") or r.get("verses") or r.get("werset")
                 or r.get("wersety") or r.get("range") or ""
@@ -364,16 +400,14 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
                 m = re.search(r"\b(\d+)\b", verse)
                 verse = m.group(1) if m else ""
 
-            # --- tekst: najpierw normalnie, potem awaryjnie, potem sanity check ---
+            # --- tekst: normalnie → awaryjnie → sanity check ---
             raw_text = (
                 r.get("text") or r.get("content") or r.get("snippet") or
                 r.get("fragment") or r.get("tekst") or r.get("tresc") or r.get("html") or ""
             )
             txt = _coerce_text_block(raw_text)
-
             if not _is_texty(txt):
                 txt = _extract_all_texts_from_any(str(r))
-
             if not _is_texty(txt):
                 candidate = _longest_string_record(r)
                 txt = candidate if _is_texty(candidate) else ""
@@ -393,10 +427,26 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             out.append({"ref": ref, "snippet": txt})
 
         if out:
+            # jeśli API nie podało zakresu – policz
+            if range_start is None or range_end is None:
+                range_start = (page - 1) * limit + 1
+                range_end = range_start + len(out) - 1
+                if total_all and range_end > total_all:
+                    range_end = total_all
+
+            meta = {
+                "page": page,
+                "limit": limit,
+                "total": total_all if total_all is not None else len(out),
+                "start": range_start,
+                "end": range_end,
+            }
+
             for h in out:
                 h["snippet"] = _highlight(h["snippet"], phrase)
-            cache_set(ck, (out, search_page_url))
-            return out, search_page_url
+
+            cache_set(ck, (out, search_page_url, meta))
+            return out, search_page_url, meta
 
     raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}). Body: {last_body[:300]}")
 
@@ -467,7 +517,7 @@ async def fraza(ctx, *, arg: str):
         return
 
     try:
-        hits, search_url = await biblia_info_search_phrase_api(trans, phrase, limit=10, page=page)
+        hits, search_url, meta = await biblia_info_search_phrase_api(trans, phrase, limit=25, page=page)
     except Exception as e:
         await ctx.reply("Brak wyników albo problem z wyszukiwarką. Spróbuj inne parametry lub za chwilę.")
         print(f"[fraza] error: {type(e).__name__}: {e}", flush=True)
@@ -477,7 +527,18 @@ async def fraza(ctx, *, arg: str):
         await ctx.reply("Brak wyników.")
         return
 
-    lines = []
+    trans_name = TRANSLATION_NAMES.get(trans, trans.upper())
+    total = meta.get("total") or len(hits)
+    start = meta.get("start") or 1
+    end   = meta.get("end") or (start + len(hits) - 1)
+
+    # Nagłówek w stylu głównej wyszukiwarki
+    summary_line = (
+        f"Znaleziono {total} wystąpień frazy «{phrase}» "
+        f"w tłumaczeniu {trans_name}. Wyświetlono wyniki {start}–{end}."
+    )
+
+    lines = [summary_line, ""]
     for h in hits:
         ref = h.get("ref", "—")
         snip = (h.get("snippet") or "").strip()
@@ -490,7 +551,7 @@ async def fraza(ctx, *, arg: str):
     first = True
     for ch in chunks:
         embed = discord.Embed(title=ch["title"], description=ch["description"])
-        if first:
+        if first and search_url:
             embed.url = search_url
             first = False
         embed.set_footer(text=ch["footer"])
