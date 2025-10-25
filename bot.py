@@ -23,8 +23,10 @@ INTENTS.guilds = True
 
 bot = commands.Bot(command_prefix=BOT_PREFIX, intents=INTENTS)
 
-# Pozwalamy nadpisać bazowy URL z ENV (np. gdy użyjesz własnego proxy)
+# Pozwalamy nadpisać bazowy URL z ENV (np. gdy użyjesz własnego proxy/CF Worker)
 BIBLIA_INFO_BASE = os.getenv("BIBLIA_INFO_BASE", "https://www.biblia.info.pl/api")
+# Domena bez /api – do budowania linków do strony wyników
+BIBLIA_ORIGIN = re.sub(r'/api/?$', '', BIBLIA_INFO_BASE)
 
 # ---- PRZEKŁADY ----
 BIBLIA_INFO_CODES = {
@@ -95,7 +97,6 @@ BOOK_SLUG_VARIANTS = {
     "mar": ["mar", "ewmar"],
     "luk": ["luk", "ewluk"],
     "obj": ["obj", "apokal", "ap"],
-    # dopisuj kolejne jeśli trafisz na nietypowy slug w API
 }
 
 REF_RE = re.compile(r'^\s*([^\d]+)\s+(\d+):(\d+(?:-\d+)?)\s*$', re.IGNORECASE)
@@ -134,8 +135,8 @@ def _strip_tags(html: str) -> str:
     s = re.sub(r'(?is)<script.*?>.*?</script>', '', s)
     s = s.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
     s = re.sub(r'(?is)<[^>]+>', '', s)
-    s = re.sub(r'\r?\n[ \t]*\r?\n+', '\n', s)   # puste linie
-    s = re.sub(r'[ \t]+', ' ', s)               # wielokrotne spacje
+    s = re.sub(r'\r?\n[ \t]*\r?\n+', '\n', s)
+    s = re.sub(r'[ \t]+', ' ', s)
     return html_lib.unescape(s).strip()
 
 def biblia_html_to_text(full_html: str) -> str:
@@ -188,10 +189,7 @@ async def http_get_text(url: str, timeout: int = 20):
 
 # ---------- POBRANIE WERSETU ----------
 async def biblia_info_get_passage(trans: str, ref: str) -> str:
-    """
-    Pobiera werset/y z biblia.info.pl. Obsługuje warianty slugów księgi (fallback na 404)
-    i zwraca czysty tekst (bez HTML/CSS).
-    """
+    """Pobiera werset/y z biblia.info.pl, zwraca czysty tekst."""
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
 
@@ -221,18 +219,27 @@ async def biblia_info_get_passage(trans: str, ref: str) -> str:
 
     raise RuntimeError(f"Błąd API ({last_status}). Odpowiedź: {last_snippet!r}")
 
-# ---------- SZUKAJ FRAZY (jak na biblia.info.pl) ----------
-def _cache_key_search(trans: str, phrase: str, limit: int) -> str:
-    return f"search|{trans}|{phrase.strip().lower()}|{limit}"
+# ---------- WYSZUKIWANIE (oficjalne API: /api/search, fallback /api/szukaj) ----------
+def _cache_key_search_api(trans: str, phrase: str, limit: int, page: int) -> str:
+    return f"searchapi|{trans}|{phrase.strip().lower()}|{limit}|{page}"
 
-# do wyłapania referencji w tekście html
-REF_INLINE_RE = re.compile(r'([A-Za-zŁŚŻŹĆŃłśżźćń\. ]{1,12}\s*\d{1,3}:\d{1,3}(?:[-–]\d{1,3})?)')
+def _highlight(hay: str, needle: str) -> str:
+    if not hay or not needle:
+        return hay
+    words = [w for w in re.split(r'\s+', needle.strip()) if w]
+    def repl(m): return f"**{m.group(0)}**"
+    for w in sorted(words, key=len, reverse=True):
+        try:
+            hay = re.sub(re.escape(w), repl, hay, flags=re.IGNORECASE)
+        except re.error:
+            pass
+    return hay
 
-async def biblia_info_search_phrase(trans: str, phrase: str, limit: int = 5):
+async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
     """
-    Szuka frazy w danym przekładzie. Zwraca listę:
-      [{ "ref": "J 3:16", "snippet": "Tak bowiem Bóg..." }, ...]
-    Próbuje kilku możliwych endpointów API oraz fallback do HTML.
+    Wyszukiwanie frazy przez oficjalne API biblia.info.pl.
+    Zwraca: (results, search_page_url)
+    results = [{ "ref": "J 3:16", "snippet": "Tak bowiem Bóg..." }, ...]
     """
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
@@ -241,98 +248,70 @@ async def biblia_info_search_phrase(trans: str, phrase: str, limit: int = 5):
     if not phrase:
         raise ValueError("Podaj frazę do wyszukania.")
 
-    ck = _cache_key_search(trans, phrase, limit)
+    page = max(1, int(page))
+    limit = max(1, min(10, int(limit)))
+
+    ck = _cache_key_search_api(trans, phrase, limit, page)
     cached = cache_get(ck)
     if cached:
         return cached
 
-    q = quote_plus(phrase)
     code = BIBLIA_INFO_CODES[trans]
+    q = quote_plus(phrase)
+
+    API_BASE = BIBLIA_INFO_BASE
+    ORIGIN = BIBLIA_ORIGIN
+    search_page_url = f"{ORIGIN}/szukaj.php?st={q}&tl={code}&p={page}"
+
     candidates = [
-        (f"{BIBLIA_INFO_BASE}/szukaj/{code}?q={q}", "json"),
-        (f"{BIBLIA_INFO_BASE}/search/{code}?q={q}", "json"),
-        (f"{BIBLIA_INFO_BASE}/szukaj?q={q}&tlum={code}", "json"),
-        (f"https://www.biblia.info.pl/szukaj.php?st={q}&tl={code}", "html"),
-        (f"https://www.biblia.info.pl/szukaj.php?st={q}", "html"),
+        f"{API_BASE}/search/{code}?q={q}&page={page}&limit={limit}",
+        f"{API_BASE}/szukaj/{code}?q={q}&page={page}&limit={limit}",
     ]
 
-    results = []
-    last_status = None
-    last_snippet = ""
-
-    for url, mode in candidates:
+    last_status, last_body = None, ""
+    for url in candidates:
         status, body = await http_get_text(url, timeout=20)
-        last_status, last_snippet = status, (body or "")[:160].replace("\n", " ")
+        last_status, last_body = status, (body or "")[:180].replace("\n", " ")
         if status != 200 or not body:
             continue
 
         try:
-            if mode == "json":
-                import json
-                data = json.loads(body)
-                items = []
+            import json
+            data = json.loads(body)
+            seq = []
+            if isinstance(data, dict):
+                if isinstance(data.get("hits"), list):
+                    seq = data["hits"]
+                elif isinstance(data.get("data"), list):
+                    seq = data["data"]
+                elif isinstance(data.get("results"), list):
+                    seq = data["results"]
+            elif isinstance(data, list):
+                seq = data
 
-                if isinstance(data, dict) and "hits" in data and isinstance(data["hits"], list):
-                    for h in data["hits"]:
-                        ref = (h.get("ref") or h.get("reference") or "").strip()
-                        txt = (h.get("text") or h.get("snippet") or h.get("content") or "").strip()
-                        if ref and txt:
-                            items.append({"ref": ref, "snippet": _strip_tags(txt)})
+            out = []
+            for h in seq:
+                if not isinstance(h, dict):
+                    continue
+                ref = (h.get("ref") or h.get("reference") or "").strip()
+                txt = (h.get("snippet") or h.get("text") or h.get("content") or "").strip()
+                if not ref:
+                    book = (h.get("book") or "").strip()
+                    chapter = str(h.get("chapter") or "").strip()
+                    verse = str(h.get("verse") or "").strip()
+                    if book and chapter and verse:
+                        ref = f"{book} {chapter}:{verse}"
+                if ref and txt:
+                    out.append({"ref": ref, "snippet": _strip_tags(txt)})
 
-                elif isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
-                    for h in data["data"]:
-                        ref = (h.get("ref") or h.get("reference") or "").strip()
-                        txt = (h.get("text") or h.get("snippet") or h.get("content") or "").strip()
-                        if ref and txt:
-                            items.append({"ref": ref, "snippet": _strip_tags(txt)})
+            if out:
+                cache_set(ck, (out, search_page_url))
+                return out, search_page_url
 
-                elif isinstance(data, list):
-                    for h in data:
-                        if isinstance(h, dict):
-                            ref = (h.get("ref") or h.get("reference") or "").strip()
-                            txt = (h.get("text") or h.get("snippet") or h.get("content") or "").strip()
-                            if ref and txt:
-                                items.append({"ref": ref, "snippet": _strip_tags(txt)})
-
-                if items:
-                    results = items[:limit]
-                    break
-
-            else:
-                # mode == "html": spróbuj parsować HTML wyników
-                text_all = html_lib.unescape(_strip_tags(body))
-                # rozbij na potencjalne linie wyników i szukaj ref + okolicy frazy
-                chunks = re.split(r'\n{2,}|—|-{3,}|•|\u2022', text_all)
-                acc = []
-                for ch in chunks:
-                    mref = REF_INLINE_RE.search(ch)
-                    if not mref:
-                        continue
-                    ref = mref.group(1).strip()
-                    t = re.sub(r'\s+', ' ', ch).strip()
-                    idx = t.lower().find(phrase.lower())
-                    if idx != -1:
-                        start = max(0, idx - 60)
-                        end = min(len(t), idx + len(phrase) + 60)
-                        snippet = t[start:end]
-                    else:
-                        snippet = t[:160]
-                    snippet = snippet.strip(" .…\u2026")
-                    acc.append({"ref": ref, "snippet": snippet})
-                    if len(acc) >= limit:
-                        break
-                if acc:
-                    results = acc
-                    break
         except Exception:
-            # spróbujemy kolejny wariant
             continue
 
-    if not results:
-        raise RuntimeError(f"Brak wyników lub błąd wyszukiwania (status {last_status}). Odpowiedź: {last_snippet!r}")
-
-    cache_set(ck, results)
-    return results
+    raise RuntimeError(f"Brak wyników lub błąd wyszukiwania (status {last_status}). Odpowiedź: {last_body!r}")
 
 # --------------- komendy ---------------
 
@@ -363,55 +342,53 @@ async def werset(ctx, *, arg: str):
 @bot.command(name="fraza")
 async def fraza(ctx, *, arg: str):
     """
-    Szuka frazy w danym przekładzie (domyślnie BW).
+    Wyszukaj frazę przez oficjalne API.
     Użycie:
       !fraza <fraza>
       !fraza <fraza> <kod_przekładu>
-    Przykłady:
-      !fraza tak bowiem Bóg umiłował świat
-      !fraza łaska i pokój ubg
+      !fraza <fraza> <kod_przekładu> <strona>
     """
     if not arg or not arg.strip():
-        await ctx.reply("Użycie: `!fraza <FRAZA> [PRZEKŁAD]` np. `!fraza tak bowiem Bóg umiłował świat ubg`")
+        await ctx.reply("Użycie: `!fraza <FRAZA> [PRZEKŁAD] [STRONA]`")
         return
 
     parts = arg.strip().split()
-    last = parts[-1].lower()
-    if last in BIBLIA_INFO_CODES:
-        trans = last
-        phrase = " ".join(parts[:-1]).strip()
-    else:
-        trans = "bw"
-        phrase = " ".join(parts).strip()
+    page = 1
+    trans = "bw"
 
+    if parts[-1].isdigit():
+        page = max(1, int(parts[-1]))
+        parts = parts[:-1]
+
+    if parts and parts[-1].lower() in BIBLIA_INFO_CODES:
+        trans = parts[-1].lower()
+        parts = parts[:-1]
+
+    phrase = " ".join(parts).strip()
     if not phrase:
         await ctx.reply("Podaj frazę do wyszukania, np. `!fraza tak bowiem Bóg umiłował świat`")
         return
 
     try:
-        hits = await biblia_info_search_phrase(trans, phrase, limit=5)
+        hits, search_url = await biblia_info_search_phrase_api(trans, phrase, limit=5, page=page)
     except Exception as e:
         await ctx.reply(f"❌ Błąd wyszukiwania: {e}")
-        return
-
-    if not hits:
-        await ctx.reply("Brak wyników.")
         return
 
     lines = []
     for h in hits:
         ref = h.get("ref", "—")
-        snip = (h.get("snippet") or "").strip()
-        if len(snip) > 180:
-            snip = snip[:177] + "…"
+        snip = _highlight((h.get("snippet") or "").strip(), phrase)
+        if len(snip) > 200:
+            snip = snip[:197] + "…"
         lines.append(f"**{ref}** — {snip}")
 
-    desc = "\n\n".join(lines)
     embed = discord.Embed(
-        title=f"Wyniki dla: „{phrase}” — {trans.upper()}",
-        description=desc[:4000]
+        title=f"Wyniki („{phrase}”) — {trans.upper()} — strona {page}",
+        description="\n\n".join(lines)[:4000]
     )
-    embed.set_footer(text="Źródło: biblia.info.pl (wyszukiwarka)")
+    embed.url = search_url  # klik do pełnej strony z wynikami
+    embed.set_footer(text="Źródło: biblia.info.pl (API search)")
     await ctx.reply(embed=embed)
 
 @bot.command()
@@ -431,17 +408,14 @@ async def diag(ctx):
     )
     await ctx.reply(f"```{report}```")
 
-# --------------- eventy / logi ---------------
-
 @bot.command(name="komendy")
 async def komendy(ctx):
     names = [c.name for c in bot.commands]
     await ctx.reply(", ".join(sorted(names)))
-    
+
+# --------------- eventy / logi ---------------
 @bot.event
 async def on_message(message: discord.Message):
-    # podgląd w logach (opcjonalnie)
-    # print(f"[MSG] g={getattr(message.guild,'name',None)} ch={getattr(message.channel,'name',None)} by={message.author} content={message.content!r}", flush=True)
     await bot.process_commands(message)
 
 @bot.event
