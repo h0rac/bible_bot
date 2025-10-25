@@ -141,7 +141,6 @@ def _strip_tags(html: str) -> str:
     return html_lib.unescape(s).strip()
 
 def biblia_html_to_text(full_html: str) -> str:
-    """Z <div class="verse-text">...> wyciąga tekst + numer wersu; fallback: globalny strip."""
     blocks = DIV_VERSE_RE.findall(full_html)
     lines = []
     if blocks:
@@ -156,7 +155,7 @@ def biblia_html_to_text(full_html: str) -> str:
         return "\n".join(lines).strip()
     return _strip_tags(full_html)
 
-# ---------- HTTP (z nagłówkami i retry – pomaga na Cloudflare) ----------
+# ---------- HTTP ----------
 _UAS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
@@ -190,7 +189,6 @@ async def http_get_text(url: str, timeout: int = 20):
 
 # ---------- POBRANIE WERSETU ----------
 async def biblia_info_get_passage(trans: str, ref: str) -> str:
-    """Pobiera werset/y z biblia.info.pl, zwraca czysty tekst."""
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
 
@@ -236,14 +234,14 @@ def _highlight(hay: str, needle: str) -> str:
             pass
     return hay
 
-# --- ekstra: rozpakowanie „pseudo-JSON” z tekstami wersetów ---
-_TEXT_KEY_RE = re.compile(r'''(?is)(["']text["']\s*:\s*["'])(.+?)(["'])''')
+# rozpakowanie „pseudo-JSON” z tekstami wersetów (obsługa krzywych cudzysłowów)
+_TEXT_KEY_RE = re.compile(r'(?is)(["\'“”]text["\'“”]\s*:\s*["\'“”])(.*?)(["\'“”])')
 
 def _coerce_text_block(raw):
     """
     Zwraca czysty string z treścią wersetów:
     - list/dict -> łączymy "nr. tekst"
-    - string będący reprezentacją listy/dict -> parsujemy literal_eval; jak się nie uda, wyciągamy 'text' regexem
+    - string będący reprezentacją listy/dict -> parsujemy literal_eval; jak się nie uda, wyciągamy wszystkie 'text'
     - zwykły string -> zwracamy
     """
     if isinstance(raw, list):
@@ -366,7 +364,7 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             if not txt:
                 txt = _longest_string_record(r)
 
-            # najpierw unescape, potem odetnij wszelkie tagi (w tym <strong>)
+            # finalne czyszczenie HTML -> dopiero potem highlight
             txt = html_lib.unescape(txt)
             txt = re.sub(r"(?is)</?strong[^>]*>", "", txt)
             txt = _strip_tags(txt).strip()
@@ -400,7 +398,6 @@ def _split_for_embeds(title: str, footer: str, lines: list[str], limit: int = 40
     return chunks
 
 # --------------- komendy ---------------
-
 @bot.command(name="werset")
 async def werset(ctx, *, arg: str):
     """
@@ -425,7 +422,6 @@ async def werset(ctx, *, arg: str):
 @bot.command(name="fraza")
 async def fraza(ctx, *, arg: str):
     """
-    Wyszukaj frazę przez oficjalne API.
     Użycie:
       !fraza <fraza>
       !fraza <fraza> <kod_przekładu>
@@ -463,7 +459,6 @@ async def fraza(ctx, *, arg: str):
         await ctx.reply("Brak wyników.")
         return
 
-    # Buduj pełne linie; Discord limit ogarniamy dzieleniem embedów
     lines = []
     for h in hits:
         ref = h.get("ref", "—")
