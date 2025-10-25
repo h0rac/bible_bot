@@ -235,31 +235,30 @@ def _highlight(hay: str, needle: str) -> str:
     return hay
 
 # rozpakowanie „pseudo-JSON” z tekstami wersetów (obsługa krzywych cudzysłowów)
+
+# łapie też „krzywe” cudzysłowy
 _TEXT_KEY_RE = re.compile(r'(?is)(["\'“”]text["\'“”]\s*:\s*["\'“”])(.*?)(["\'“”])')
 
-def _coerce_text_block(raw):
+def _coerce_text_block(raw) -> str:
     """
-    Zwraca czysty string z treścią wersetów:
-    - list/dict -> łączymy "nr. tekst"
-    - string będący reprezentacją listy/dict -> parsujemy literal_eval; jak się nie uda, wyciągamy wszystkie 'text'
-    - zwykły string -> zwracamy
+    Zwraca czysty tekst (bez numerów wersetów):
+    - list/dict -> skleja tylko pola 'text'
+    - string z reprezentacją listy/dict -> spróbuj literal_eval; jak nie, wyciągnij wszystkie 'text' regexem
+    - zwykły string -> jak jest
     """
     if isinstance(raw, list):
         parts = []
         for it in raw:
             if isinstance(it, dict):
-                vno = str(it.get("verse") or "")
                 vtx = str(it.get("text") or "")
                 if vtx:
-                    parts.append(f"{vno}. {vtx}" if vno else vtx)
+                    parts.append(vtx)
             elif isinstance(it, str):
                 parts.append(it)
         return " ".join(parts)
 
     if isinstance(raw, dict):
-        vno = str(raw.get("verse") or "")
-        vtx = str(raw.get("text") or "")
-        return (f"{vno}. {vtx}" if vno and vtx else vtx).strip()
+        return str(raw.get("text") or "")
 
     if isinstance(raw, str) and "text" in raw and ("[" in raw or "{" in raw):
         try:
@@ -272,12 +271,8 @@ def _coerce_text_block(raw):
 
     return "" if raw is None else str(raw)
 
+
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
-    """
-    Wyszukiwanie frazy przez oficjalne API biblia.info.pl.
-    Zwraca listę czystych wyników w stylu:
-    "RDZ 1:10 — Suchy ląd Bóg nazwał ziemią..."
-    """
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
 
@@ -316,7 +311,7 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
 
     for url in urls:
         status, body = await http_get_text(url, timeout=20)
-        last_status, last_body = status, (body or "")[:800].replace("\n", " ")
+        last_status, last_body = status, (body or "")[:1000].replace("\n", " ")
         if status != 200 or not body:
             continue
 
@@ -327,12 +322,10 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
 
         seq = []
         if isinstance(data, dict):
-            if isinstance(data.get("results"), list):
-                seq = data["results"]
-            elif isinstance(data.get("hits"), list):
-                seq = data["hits"]
-            elif isinstance(data.get("data"), list):
-                seq = data["data"]
+            for key in ("results", "hits", "data", "items"):
+                if isinstance(data.get(key), list):
+                    seq = data[key]
+                    break
         elif isinstance(data, list):
             seq = data
 
@@ -340,7 +333,7 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             if not isinstance(r, dict):
                 continue
 
-            # ---- informacje o księdze i wersecie ----
+            # --- księga / rozdział ---
             book = r.get("book") or {}
             b_disp = (
                 book.get("abbreviation") or book.get("abbr") or book.get("short")
@@ -348,32 +341,43 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             ).strip().upper()
 
             chapter = str(r.get("chapter") or r.get("rozdzial") or "").strip()
-            verse = str(r.get("verse") or r.get("verses") or r.get("werset") or "").strip()
 
-            # ---- czyszczenie tekstu ----
+            # --- werset: bywa liczbą, bywa stringiem z listą -> wyciągnij pierwszą liczbę ---
+            verse_raw = (
+                r.get("verse") or r.get("verses") or r.get("werset")
+                or r.get("wersety") or r.get("range") or ""
+            )
+            verse = str(verse_raw).strip().replace(",", ":")
+
+            if "[" in verse or "{" in verse:  # np. "[{'verse':'37',...}]"
+                m = re.search(r"\b(\d+)\b", verse)
+                verse = m.group(1) if m else ""
+
+            # --- tekst (bez numerów), czyszczenie HTML ---
             raw_text = (
                 r.get("text") or r.get("content") or r.get("snippet") or
                 r.get("fragment") or r.get("tekst") or r.get("tresc") or r.get("html") or ""
             )
 
-            txt = _coerce_text_block(raw_text)
-            if not txt:
-                txt = _longest_string_record(r)
-
+            txt = _coerce_text_block(raw_text) or _longest_string_record(r)
             txt = html_lib.unescape(txt)
             txt = re.sub(r"(?is)</?strong[^>]*>", "", txt)
             txt = _strip_tags(txt).strip()
 
+            # jeśli tekst zaczyna się od tego samego numeru wersu – usuń prefix "NN. " lub "NN) "
+            if verse:
+                txt = re.sub(rf"^\s*{re.escape(verse)}[.)]\s*", "", txt)
+
             if not (b_disp and chapter and verse and txt):
                 continue
 
-            # ---- format końcowy ----
             ref = f"{b_disp} {chapter}:{verse}"
-            formatted = f"{ref} — {txt}"
-            formatted = _highlight(formatted, phrase)
-            out.append({"ref": ref, "snippet": formatted})
+            out.append({"ref": ref, "snippet": txt})
 
         if out:
+            # podświetlenie tylko frazy (na czystym tekście)
+            for h in out:
+                h["snippet"] = _highlight(h["snippet"], phrase)
             cache_set(ck, (out, search_page_url))
             return out, search_page_url
 
