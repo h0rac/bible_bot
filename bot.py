@@ -2,6 +2,7 @@ import os
 import re
 import time
 import html as html_lib
+import ast
 import aiohttp
 import asyncio
 import random
@@ -22,7 +23,7 @@ INTENTS.guilds = True
 
 bot = commands.Bot(command_prefix=BOT_PREFIX, intents=INTENTS)
 
-# Pozwalamy nadpisać bazowy URL z ENV (np. gdy użyjesz własnego proxy/CF Worker)
+# Pozwalamy nadpisać bazowy URL z ENV (np. proxy/CF Worker)
 BIBLIA_INFO_BASE = os.getenv("BIBLIA_INFO_BASE", "https://www.biblia.info.pl/api")
 # Domena bez /api – do budowania linków do strony wyników
 BIBLIA_ORIGIN = re.sub(r"/api/?$", "", BIBLIA_INFO_BASE)
@@ -161,7 +162,6 @@ _UAS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
 ]
-
 BASE_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.7,en;q=0.6",
@@ -237,14 +237,14 @@ def _highlight(hay: str, needle: str) -> str:
     return hay
 
 # --- ekstra: rozpakowanie „pseudo-JSON” z tekstami wersetów ---
-_TEXT_KEY_RE = re.compile(r"""(?is)(["']text["']\s*:\s*["'])(.+?)(["'])""")
+_TEXT_KEY_RE = re.compile(r'''(?is)(["']text["']\s*:\s*["'])(.+?)(["'])''')
 
 def _coerce_text_block(raw):
     """
-    Zwraca czysty tekst:
-    - list/dict -> zlepione "nr. tekst"
-    - string będący reprezentacją listy/dict -> wyciągnięte wszystkie 'text'
-    - zwykły string -> jak jest
+    Zwraca czysty string z treścią wersetów:
+    - list/dict -> łączymy "nr. tekst"
+    - string będący reprezentacją listy/dict -> parsujemy literal_eval; jak się nie uda, wyciągamy 'text' regexem
+    - zwykły string -> zwracamy
     """
     if isinstance(raw, list):
         parts = []
@@ -263,10 +263,14 @@ def _coerce_text_block(raw):
         vtx = str(raw.get("text") or "")
         return (f"{vno}. {vtx}" if vno and vtx else vtx).strip()
 
-    if isinstance(raw, str) and "[" in raw and "text" in raw and ("{" in raw or "}" in raw):
-        texts = [m.group(2) for m in _TEXT_KEY_RE.finditer(raw)]
-        if texts:
-            return " ".join(texts)
+    if isinstance(raw, str) and "text" in raw and ("[" in raw or "{" in raw):
+        try:
+            parsed = ast.literal_eval(raw)
+            return _coerce_text_block(parsed)
+        except Exception:
+            texts = [m.group(2) for m in _TEXT_KEY_RE.finditer(raw)]
+            if texts:
+                return " ".join(texts)
 
     return "" if raw is None else str(raw)
 
@@ -362,7 +366,11 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             if not txt:
                 txt = _longest_string_record(r)
 
+            # najpierw unescape, potem odetnij wszelkie tagi (w tym <strong>)
+            txt = html_lib.unescape(txt)
+            txt = re.sub(r"(?is)</?strong[^>]*>", "", txt)
             txt = _strip_tags(txt).strip()
+
             ref = f"{(b_disp or '').upper()} {chapter}:{verse}" if b_disp and chapter and verse else ""
 
             if ref and txt:
@@ -404,18 +412,15 @@ async def werset(ctx, *, arg: str):
     parts = arg.rsplit(" ", 1)
     if len(parts) != 2:
         await ctx.reply("Użycie: `!werset <KSIĘGA> <ROZDZIAŁ:WERS[-WERS]> <PRZEKŁAD>`\nnp. `!werset J 3:16 bw`")
-        return
-
-    ref, trans = parts[0].strip(), parts[1].strip().lower()
-    try:
-        txt = await biblia_info_get_passage(trans, ref)
-    except Exception as e:
-        await ctx.reply(f"❌ {e}")
-        return
-
-    embed = discord.Embed(title=f"{ref} — {trans.upper()}", description=txt[:4000])
-    embed.set_footer(text="Źródło: biblia.info.pl")
-    await ctx.reply(embed=embed)
+    else:
+        ref, trans = parts[0].strip(), parts[1].strip().lower()
+        try:
+            txt = await biblia_info_get_passage(trans, ref)
+            embed = discord.Embed(title=f"{ref} — {trans.upper()}", description=txt[:4000])
+            embed.set_footer(text="Źródło: biblia.info.pl")
+            await ctx.reply(embed=embed)
+        except Exception as e:
+            await ctx.reply(f"❌ {e}")
 
 @bot.command(name="fraza")
 async def fraza(ctx, *, arg: str):
@@ -458,7 +463,7 @@ async def fraza(ctx, *, arg: str):
         await ctx.reply("Brak wyników.")
         return
 
-    # Buduj PEŁNE linie (bez skracania); Discord limitujemy przez dzielenie embedów
+    # Buduj pełne linie; Discord limit ogarniamy dzieleniem embedów
     lines = []
     for h in hits:
         ref = h.get("ref", "—")
