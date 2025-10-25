@@ -6,6 +6,7 @@ import aiohttp
 import asyncio
 import random
 from urllib.parse import quote_plus
+from urllib.parse import quote
 
 import discord
 from discord.ext import commands
@@ -235,6 +236,7 @@ def _highlight(hay: str, needle: str) -> str:
             pass
     return hay
 
+
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
     """
     Wyszukiwanie frazy przez oficjalne API biblia.info.pl.
@@ -257,15 +259,16 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
         return cached
 
     code = BIBLIA_INFO_CODES[trans]
-    q = quote_plus(phrase)
-
+    # <- KLUCZ: kodujemy frazę jako SEGMENT ŚCIEŻKI
+    q_path = quote(phrase, safe="")   # wszystko percent-encode
     API_BASE = BIBLIA_INFO_BASE
     ORIGIN = BIBLIA_ORIGIN
-    search_page_url = f"{ORIGIN}/szukaj.php?st={q}&tl={code}&p={page}"
+    search_page_url = f"{ORIGIN}/szukaj.php?st={quote_plus(phrase)}&tl={code}&p={page}"
 
+    # <- KLUCZ: query w ścieżce, stronicowanie w query string
     candidates = [
-        f"{API_BASE}/search/{code}?q={q}&page={page}&limit={limit}",
-        f"{API_BASE}/szukaj/{code}?q={q}&page={page}&limit={limit}",
+        f"{API_BASE}/search/{code}/{q_path}?page={page}&limit={limit}",
+        f"{API_BASE}/szukaj/{code}/{q_path}?page={page}&limit={limit}",
     ]
 
     last_status, last_body = None, ""
