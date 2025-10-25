@@ -274,8 +274,9 @@ def _coerce_text_block(raw):
 
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
     """
-    Zwraca: (results, search_page_url)
-    results = [{ "ref": "J 3:16", "snippet": "<PEŁNY TEKST>" }, ...]
+    Wyszukiwanie frazy przez oficjalne API biblia.info.pl.
+    Zwraca listę czystych wyników w stylu:
+    "RDZ 1:10 — Suchy ląd Bóg nazwał ziemią..."
     """
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
@@ -303,13 +304,15 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
         f"{API_BASE}/szukaj/{code}/{q_path}?page={page}&limit={limit}",
     ]
 
-    last_status, last_body = None, ""
     import json
+    last_status, last_body = None, ""
 
     def _longest_string_record(rec: dict) -> str:
         ban = {"book", "chapter", "rozdzial", "verse", "verses", "werset", "wersety", "range"}
         cand = [str(v) for k, v in rec.items() if k not in ban and isinstance(v, str)]
         return max(cand, key=len).strip() if cand else ""
+
+    out = []
 
     for url in urls:
         status, body = await http_get_text(url, timeout=20)
@@ -322,9 +325,6 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
         except Exception:
             continue
 
-        out = []
-
-        # --- GŁÓWNY FORMAT: dict z kluczem "results" ---
         seq = []
         if isinstance(data, dict):
             if isinstance(data.get("results"), list):
@@ -333,8 +333,6 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
                 seq = data["hits"]
             elif isinstance(data.get("data"), list):
                 seq = data["data"]
-            elif isinstance(data.get("items"), list):
-                seq = data["items"]
         elif isinstance(data, list):
             seq = data
 
@@ -342,19 +340,17 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             if not isinstance(r, dict):
                 continue
 
+            # ---- informacje o księdze i wersecie ----
             book = r.get("book") or {}
             b_disp = (
                 book.get("abbreviation") or book.get("abbr") or book.get("short")
                 or book.get("short_name") or book.get("name") or ""
-            ).strip()
+            ).strip().upper()
 
             chapter = str(r.get("chapter") or r.get("rozdzial") or "").strip()
-            verse = (
-                r.get("verse") or r.get("verses") or r.get("werset")
-                or r.get("wersety") or r.get("range") or ""
-            )
-            verse = str(verse).strip().replace(",", ":")
+            verse = str(r.get("verse") or r.get("verses") or r.get("werset") or "").strip()
 
+            # ---- czyszczenie tekstu ----
             raw_text = (
                 r.get("text") or r.get("content") or r.get("snippet") or
                 r.get("fragment") or r.get("tekst") or r.get("tresc") or r.get("html") or ""
@@ -364,23 +360,24 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             if not txt:
                 txt = _longest_string_record(r)
 
-            # finalne czyszczenie HTML -> dopiero potem highlight
             txt = html_lib.unescape(txt)
             txt = re.sub(r"(?is)</?strong[^>]*>", "", txt)
             txt = _strip_tags(txt).strip()
 
-            ref = f"{(b_disp or '').upper()} {chapter}:{verse}" if b_disp and chapter and verse else ""
+            if not (b_disp and chapter and verse and txt):
+                continue
 
-            if ref and txt:
-                out.append({"ref": ref, "snippet": txt})
+            # ---- format końcowy ----
+            ref = f"{b_disp} {chapter}:{verse}"
+            formatted = f"{ref} — {txt}"
+            formatted = _highlight(formatted, phrase)
+            out.append({"ref": ref, "snippet": formatted})
 
         if out:
-            for h in out:
-                h["snippet"] = _highlight(h["snippet"], phrase)
             cache_set(ck, (out, search_page_url))
             return out, search_page_url
 
-    raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}). Body (800B): {last_body}")
+    raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}). Body: {last_body[:300]}")
 
 def _split_for_embeds(title: str, footer: str, lines: list[str], limit: int = 4000):
     """Dzieli listę linii na porcje <= limit dla Discord embed.description."""
