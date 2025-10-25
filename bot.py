@@ -296,21 +296,48 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
             for h in seq:
                 if not isinstance(h, dict):
                     continue
-                ref = (h.get("ref") or h.get("reference") or "").strip()
-                txt = (h.get("snippet") or h.get("text") or h.get("content") or "").strip()
+
+                # --- referencja ---
+                ref = (
+                    (h.get("ref") or h.get("reference") or h.get("miejsce") or h.get("title") or "").strip()
+                )
+
+                # próbuj złożyć ref z elementów, jeśli brak
                 if not ref:
-                    book = (h.get("book") or "").strip()
-                    chapter = str(h.get("chapter") or "").strip()
-                    verse = str(h.get("verse") or "").strip()
-                    if book and chapter and verse:
-                        ref = f"{book} {chapter}:{verse}"
+                    book = (h.get("book") or h.get("ksiega") or h.get("nazwa_ksiegi") or "").strip()
+                    # czasem bywa skrót księgi
+                    book_short = (h.get("book_short") or h.get("skrot") or "").strip()
+                    chapter = str(h.get("chapter") or h.get("rozdzial") or "").strip()
+                    # verse/verses, w PL bywa "werset" / "wersety"
+                    verse = str(h.get("verse") or h.get("werset") or "").strip()
+                    verses = str(h.get("verses") or h.get("wersety") or "").strip()
+                    bname = book_short or book
+                    vpart = verse or verses
+                    if bname and chapter and vpart:
+                        ref = f"{bname} {chapter}:{vpart}"
+
+                # doprowadź format J 3,16 -> J 3:16
+                if ref and "," in ref and ":" not in ref:
+                    ref = ref.replace(",", ":")
+
+                # --- tekst/snippet ---
+                txt = (
+                    (h.get("snippet") or h.get("text") or h.get("content") or
+                     h.get("fragment") or h.get("tekst") or h.get("tresc") or "").strip()
+                )
+
+                # czasem treść jest pod innym kluczem, spróbuj wyłuskać najdłuższy string
+                if not txt:
+                    candidates = [v for v in h.values() if isinstance(v, str)]
+                    if candidates:
+                        txt = max(candidates, key=len).strip()
+
                 if ref and txt:
                     out.append({"ref": ref, "snippet": _strip_tags(txt)})
 
             if out:
                 cache_set(ck, (out, search_page_url))
                 return out, search_page_url
-
         except Exception:
             continue
 
