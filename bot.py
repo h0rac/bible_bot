@@ -494,16 +494,24 @@ async def fraza(ctx, *, arg: str):
       !fraza <fraza>
       !fraza <fraza> <kod_przekładu>
       !fraza <fraza> <kod_przekładu> <strona>
+      !fraza <fraza> [<kod_przekładu>] all   -> pobierz wszystkie strony (do 10)
     """
     if not arg or not arg.strip():
-        await ctx.reply("Użycie: `!fraza <FRAZA> [PRZEKŁAD] [STRONA]`")
+        await ctx.reply("Użycie: `!fraza <FRAZA> [PRZEKŁAD] [STRONA|all]`")
         return
 
+    PAGE_SIZE = 25
     parts = arg.strip().split()
     page = 1
     trans = "bw"
+    fetch_all = False
 
-    if parts[-1].isdigit():
+    # "all" / "wszystko" na końcu włącza ściąganie wszystkich stron
+    if parts[-1].lower() in ("all", "wsz", "wszystko"):
+        fetch_all = True
+        parts = parts[:-1]
+
+    if parts and parts[-1].isdigit():
         page = max(1, int(parts[-1]))
         parts = parts[:-1]
 
@@ -516,35 +524,60 @@ async def fraza(ctx, *, arg: str):
         await ctx.reply("Podaj frazę do wyszukania, np. `!fraza tak bowiem Bóg umiłował świat`")
         return
 
+    hits_all = []
+    meta_last = None
+    search_url = None
+
     try:
-        hits, search_url, meta = await biblia_info_search_phrase_api(trans, phrase, limit=25, page=page)
+        if fetch_all:
+            cur = page
+            for _ in range(10):  # safety: max 10 stron naraz
+                hits, search_url, meta = await biblia_info_search_phrase_api(
+                    trans, phrase, limit=PAGE_SIZE, page=cur
+                )
+                if not hits:
+                    break
+                hits_all.extend(hits)
+                meta_last = meta
+                # koniec?
+                if meta.get("end") and meta.get("total") and meta["end"] >= meta["total"]:
+                    break
+                cur += 1
+        else:
+            hits_all, search_url, meta_last = await biblia_info_search_phrase_api(
+                trans, phrase, limit=PAGE_SIZE, page=page
+            )
     except Exception as e:
         await ctx.reply("Brak wyników albo problem z wyszukiwarką. Spróbuj inne parametry lub za chwilę.")
         print(f"[fraza] error: {type(e).__name__}: {e}", flush=True)
         return
 
-    if not hits:
+    if not hits_all:
         await ctx.reply("Brak wyników.")
         return
 
     trans_name = TRANSLATION_NAMES.get(trans, trans.upper())
-    total = meta.get("total") or len(hits)
-    start = meta.get("start") or 1
-    end   = meta.get("end") or (start + len(hits) - 1)
+    total = meta_last.get("total") if meta_last else len(hits_all)
+    # gdy fetch_all – pokazujemy pełen zakres 1..N, inaczej zakres z meta
+    if fetch_all:
+        start, end = 1, len(hits_all)
+        title = f"Wyniki („{phrase}”) — {trans.upper()} — wszystkie ({end} z {total})"
+    else:
+        start = meta_last.get("start") or 1
+        end = meta_last.get("end") or (start + len(hits_all) - 1)
+        title = f"Wyniki („{phrase}”) — {trans.upper()} — strona {page}"
 
-    # Nagłówek w stylu głównej wyszukiwarki
     summary_line = (
         f"Znaleziono {total} wystąpień frazy «{phrase}» "
         f"w tłumaczeniu {trans_name}. Wyświetlono wyniki {start}–{end}."
     )
 
     lines = [summary_line, ""]
-    for h in hits:
+    for h in hits_all:
         ref = h.get("ref", "—")
         snip = (h.get("snippet") or "").strip()
         lines.append(f"**{ref}** — {snip}")
 
-    title = f"Wyniki („{phrase}”) — {trans.upper()} — strona {page}"
     footer = "Źródło: biblia.info.pl (API search)"
     chunks = _split_for_embeds(title, footer, lines, limit=4000)
 
