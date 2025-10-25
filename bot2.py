@@ -432,6 +432,12 @@ async def diag(ctx):
     await ctx.reply(f"```{report}```")
 
 # --------------- eventy / logi ---------------
+
+@bot.command(name="komendy")
+async def komendy(ctx):
+    names = [c.name for c in bot.commands]
+    await ctx.reply(", ".join(sorted(names)))
+    
 @bot.event
 async def on_message(message: discord.Message):
     # podgląd w logach (opcjonalnie)
