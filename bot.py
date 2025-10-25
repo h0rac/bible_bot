@@ -235,10 +235,9 @@ def _highlight(hay: str, needle: str) -> str:
         except re.error:
             pass
     return hay
-
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
     """
-    Wyszukiwanie frazy przez oficjalne API biblia.info.pl.
+    Wyszukiwanie frazy przez oficjalne API biblia.info.pl (i fallback /szukaj).
     Zwraca: (results, search_page_url)
     results = [{ "ref": "J 3:16", "snippet": "Tak bowiem Bóg..." }, ...]
     """
@@ -258,7 +257,7 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
         return cached
 
     code = BIBLIA_INFO_CODES[trans]
-    q_path = quote(phrase, safe="")  # query jako segment ścieżki
+    q_path = quote(phrase, safe="")
     API_BASE = BIBLIA_INFO_BASE
     ORIGIN = BIBLIA_ORIGIN
     search_page_url = f"{ORIGIN}/szukaj.php?st={quote_plus(phrase)}&tl={code}&p={page}"
@@ -271,21 +270,66 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
     last_status, last_body = None, ""
     for url in candidates:
         status, body = await http_get_text(url, timeout=20)
-        last_status, last_body = status, (body or "")[:180].replace("\n", " ")
+        last_status, last_body = status, (body or "")[:200].replace("\n", " ")
         if status != 200 or not body:
             continue
 
         try:
             import json
             data = json.loads(body)
+
+            # 1) „Oficjalny” format: {"type":"Wyniki wyszukiwania", ... "results":[ {...} ]}
+            if isinstance(data, dict) and data.get("type", "").lower().startswith("wyniki"):
+                seq = data.get("results") or []
+                out = []
+                for r in seq:
+                    if not isinstance(r, dict):
+                        continue
+
+                    # Księga: krótsza forma (abbr/short) lub pełna nazwa
+                    book_block = r.get("book") or {}
+                    b_short = (book_block.get("abbr") or book_block.get("short") or
+                               book_block.get("short_name") or "").strip()
+                    b_name = (book_block.get("name") or book_block.get("nazwa") or "").strip()
+                    b_disp = b_short or b_name or ""
+
+                    # Rozdział / wers(y)
+                    chapter = str(r.get("chapter") or r.get("rozdzial") or "").strip()
+                    verse = (r.get("verse") or r.get("werset") or
+                             r.get("verses") or r.get("wersety") or "")
+                    verse = str(verse).strip()
+
+                    # Tekst / fragment
+                    txt = (
+                        r.get("snippet") or r.get("text") or r.get("content") or
+                        r.get("fragment") or r.get("tekst") or r.get("tresc") or ""
+                    )
+                    txt = _strip_tags(str(txt))
+
+                    # Złóż referencję, np. "J 3:16" albo "Rdz 1:1-3"
+                    ref = ""
+                    if b_disp and chapter and verse:
+                        # Zamień ewentualny separator przecinek->dwukropek
+                        verse_clean = verse.replace(",", ":")
+                        ref = f"{b_disp} {chapter}:{verse_clean}"
+
+                    if ref and txt:
+                        out.append({"ref": ref, "snippet": txt})
+
+                if out:
+                    # Podświetlenie frazy
+                    for h in out:
+                        h["snippet"] = _highlight(h["snippet"], phrase)
+                    cache_set(ck, (out, search_page_url))
+                    return out, search_page_url
+
+            # 2) Ogólne fallbacki: inne możliwe klucze „hits” / „data” / „results”
             seq = []
             if isinstance(data, dict):
-                if isinstance(data.get("hits"), list):
-                    seq = data["hits"]
-                elif isinstance(data.get("data"), list):
-                    seq = data["data"]
-                elif isinstance(data.get("results"), list):
-                    seq = data["results"]
+                for key in ("hits", "data", "results", "items"):
+                    if isinstance(data.get(key), list):
+                        seq = data[key]
+                        break
             elif isinstance(data, list):
                 seq = data
 
@@ -294,46 +338,36 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
                 if not isinstance(h, dict):
                     continue
 
-                # --- referencja ---
+                # ref z gotowego pola lub złożony z elementów
                 ref = (h.get("ref") or h.get("reference") or h.get("miejsce") or h.get("title") or "").strip()
-
-                # próbuj złożyć ref z elementów, jeśli brak
                 if not ref:
-                    book = (h.get("book") or h.get("ksiega") or h.get("nazwa_ksiegi") or "").strip()
-                    book_short = (h.get("book_short") or h.get("skrot") or "").strip()
+                    bname = (h.get("book_short") or h.get("skrot") or h.get("book") or h.get("ksiega") or "").strip()
                     chapter = str(h.get("chapter") or h.get("rozdzial") or "").strip()
-                    verse = str(h.get("verse") or h.get("werset") or "").strip()
-                    verses = str(h.get("verses") or h.get("wersety") or "").strip()
-                    bname = book_short or book
-                    vpart = verse or verses
-                    if bname and chapter and vpart:
-                        ref = f"{bname} {chapter}:{vpart}"
+                    verse = str(h.get("verse") or h.get("werset") or h.get("verses") or h.get("wersety") or "").strip()
+                    if bname and chapter and verse:
+                        ref = f"{bname} {chapter}:{verse.replace(',', ':')}"
 
-                # J 3,16 -> J 3:16
-                if ref and "," in ref and ":" not in ref:
-                    ref = ref.replace(",", ":")
-
-                # --- tekst/snippet ---
                 txt = (
                     h.get("snippet") or h.get("text") or h.get("content") or
                     h.get("fragment") or h.get("tekst") or h.get("tresc") or ""
-                ).strip()
-
-                if not txt:
-                    candidates_txt = [v for v in h.values() if isinstance(v, str)]
-                    if candidates_txt:
-                        txt = max(candidates_txt, key=len).strip()
+                )
+                txt = _strip_tags(str(txt))
 
                 if ref and txt:
-                    out.append({"ref": ref, "snippet": _strip_tags(txt)})
+                    out.append({"ref": ref, "snippet": txt})
 
             if out:
+                for h in out:
+                    h["snippet"] = _highlight(h["snippet"], phrase)
                 cache_set(ck, (out, search_page_url))
                 return out, search_page_url
+
         except Exception:
+            # spróbuj następną ścieżkę z candidates
             continue
 
     raise RuntimeError(f"Brak wyników lub błąd wyszukiwania (status {last_status}). Odpowiedź: {last_body!r}")
+
 
 # --------------- komendy ---------------
 
