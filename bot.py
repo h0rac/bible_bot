@@ -634,4 +634,3 @@ TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not TOKEN:
     raise SystemExit("Brak DISCORD_BOT_TOKEN w środowisku")
 bot.run(TOKEN)
-
