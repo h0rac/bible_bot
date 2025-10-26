@@ -774,6 +774,12 @@ class FHResultsView(discord.ui.View):
         self.footer = footer
         self.title = title
 
+        # Czy blokować na autora? 0/1 z ENV (domyślnie: NIE blokuj).
+        self.locked_to_author = os.getenv("FH_LOCKED_TO_AUTHOR", "0") in ("1", "true", "yes")
+        # Anty-spam: cooldown (sekundy) per user
+        self.cooldown = 1.5
+        self._last_click_per_user: dict[int, float] = {}
+
     @property
     def total_pages(self):
         from math import ceil
@@ -791,35 +797,47 @@ class FHResultsView(discord.ui.View):
         embed.set_footer(text=self.footer)
         return embed
 
-    async def _ensure_user(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx_author_id:
-            await interaction.response.send_message("Tę paginację może obsługiwać tylko autor komendy.", ephemeral=True)
+    async def _can_interact(self, interaction: discord.Interaction) -> bool:
+        # 1) opcjonalna blokada do autora (włączana ENV)
+        if self.locked_to_author and interaction.user.id != self.ctx_author_id:
+            await interaction.response.send_message(
+                "Tę paginację może obsługiwać tylko autor komendy (ustawienie FH_LOCKED_TO_AUTHOR).",
+                ephemeral=True
+            )
             return False
+        # 2) prosty cooldown per user
+        import time as _t
+        now = _t.time()
+        last = self._last_click_per_user.get(interaction.user.id, 0.0)
+        if now - last < self.cooldown:
+            await interaction.response.send_message("Daj mi sekundkę… (cooldown)", ephemeral=True)
+            return False
+        self._last_click_per_user[interaction.user.id] = now
         return True
 
     @discord.ui.button(label="⏮︎", style=discord.ButtonStyle.secondary)
     async def first_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._ensure_user(interaction): return
+        if not await self._can_interact(interaction): return
         self.page = 0
         await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
     @discord.ui.button(label="◀︎", style=discord.ButtonStyle.secondary)
     async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._ensure_user(interaction): return
+        if not await self._can_interact(interaction): return
         if self.page > 0:
             self.page -= 1
         await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
     @discord.ui.button(label="▶︎", style=discord.ButtonStyle.secondary)
     async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._ensure_user(interaction): return
+        if not await self._can_interact(interaction): return
         if self.page < self.total_pages - 1:
             self.page += 1
         await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
     @discord.ui.button(label="⏭︎", style=discord.ButtonStyle.secondary)
     async def last_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._ensure_user(interaction): return
+        if not await self._can_interact(interaction): return
         self.page = self.total_pages - 1
         await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
