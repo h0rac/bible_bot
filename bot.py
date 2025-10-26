@@ -885,7 +885,7 @@ async def find_hebrew(ctx, *, arg: str):
         return
 
     PER_PAGE_API = 10
-    MAX_ALL = 150
+    MAX_ALL = 1000
 
     try:
         if fetch_all:
