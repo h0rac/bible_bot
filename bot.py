@@ -950,6 +950,7 @@ async def find_hebrew(ctx, *, arg: str):
             lines.append("")
         if bw_txt:
             lines.append(f"*BW:* {bw_txt}")
+            lines.append("")
         return "\n".join(lines).strip()
 
 
