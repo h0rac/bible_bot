@@ -270,41 +270,48 @@ def _pl_ref_from_usfm(verse_id: str) -> tuple[str, str]:
 
 async def api_bible_search_hebrew(query: str, page: int = 1, per_page: int = 10):
     """
-    Zwraca (hits, meta) gdzie hits = [{verseId, bookId, reference, snippet?}]
+    Zwraca (hits, meta) gdzie hits = [{verseId, reference}]
+    UWAGA: w API.Bible 'offset' = numer strony 0-based, a nie liczba rekordów do pominięcia.
     """
     page = max(1, int(page))
     per_page = max(1, min(25, int(per_page)))
-    offset = (page - 1) * per_page
+
+    # tu był błąd: offset = (page-1) * per_page  ❌
+    api_offset = page - 1  # ✅ numer strony (0,1,2,...) zgodnie z docs
+
     ck = f"api_bible_search|{query}|{page}|{per_page}"
     cached = cache_get(ck)
     if cached:
         return cached
+
     q = quote_plus(query)
-    url = (f"{API_BIBLE_BASE}/bibles/{WLC_BIBLE_ID}/search?"
-           f"query={q}&offset={offset}&limit={per_page}&sort=relevance")
+    url = (f"{API_BIBLE_BASE}/bibles/{WLC_BIBLE_ID}/search"
+           f"?query={q}&offset={api_offset}&limit={per_page}&sort=relevance")
+
     status, data = await http_get_json(url, headers=_api_bible_headers(), timeout=25)
     if status != 200 or not isinstance(data, dict):
         raise RuntimeError(f"api.bible search fail: {status}")
+
     d = data.get("data") or {}
     total = int(d.get("total", 0))
-    lim = int(d.get("limit", per_page))
-    off = int(d.get("offset", offset))
+    lim = int(d.get("limit", per_page)) or per_page
+    off = int(d.get("offset", api_offset))
+
     verses = d.get("verses") or []
-    hits = []
-    for v in verses:
-        verse_id = v.get("id") or ""
-        ref_txt = str(v.get("reference") or "")
-        hits.append({
-            "id": verse_id,
-            "reference": ref_txt,
-        })
+    hits = [{"id": v.get("id") or "", "reference": str(v.get("reference") or "")} for v in verses if v]
+
+    # wylicz stron/ę zgodnie z definicją API
+    pages = (total + lim - 1) // lim if lim else 1
+    cur_page = off + 1  # bo 'offset' jest 0-based numerem strony
+
     meta = {
-        "page": page,
+        "page": cur_page,
         "limit": lim,
         "offset": off,
         "total": total,
-        "pages": (total + lim - 1) // lim if lim else 1
+        "pages": max(pages, 1)
     }
+
     cache_set(ck, (hits, meta))
     return hits, meta
 
