@@ -947,9 +947,12 @@ async def find_hebrew(ctx, *, arg: str):
         lines.append("")  # odstęp między HE a tłumaczeniami
         if bt_txt:
             lines.append(f"*BT:* {bt_txt}")
+            lines.append("")
         if bw_txt:
             lines.append(f"*BW:* {bw_txt}")
         return "\n".join(lines).strip()
+
+
 
     BATCH = 10
     blocks = []
