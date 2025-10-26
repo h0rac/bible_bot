@@ -25,7 +25,7 @@ bot = commands.Bot(command_prefix=BOT_PREFIX, intents=INTENTS)
 
 # === api.bible (WLC) ===
 API_BIBLE_BASE = os.getenv("API_BIBLE_BASE", "https://api.scripture.api.bible/v1")
-API_BIBLE_TOKEN = os.getenv("API_BIBLE_TOKEN")  # <-- ustaw zmienną ENV
+API_BIBLE_TOKEN = os.getenv("API_BIBLE_TOKEN")  # <-- wymagany
 WLC_BIBLE_ID = "0b262f1ed7f084a6-01"           # The Hebrew Bible, Westminster Leningrad Codex
 
 # === biblia.info.pl (PL przekłady) ===
@@ -95,7 +95,7 @@ def cache_get(k: str):
 def cache_set(k: str, d):
     _cache[k] = {"t": time.time(), "d": d}
 
-# ---------- HTML utils ----------
+# ---------- HTML / tekst utils ----------
 def _strip_tags(html: str) -> str:
     s = re.sub(r"(?is)<style.*?>.*?</style>", "", html)
     s = re.sub(r"(?is)<script.*?>.*?</script>", "", s)
@@ -104,6 +104,18 @@ def _strip_tags(html: str) -> str:
     s = re.sub(r"\r?\n[ \t]*\r?\n+", "\n", s)
     s = re.sub(r"[ \t]+", " ", s)
     return html_lib.unescape(s).strip()
+
+def _compact_blank_lines(text: str) -> str:
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    out = []
+    last_blank = False
+    for ln in lines:
+        blank = (ln.strip() == "")
+        if blank and last_blank:
+            continue
+        out.append(ln)
+        last_blank = blank
+    return "\n".join(out).strip()
 
 # ---------- Hebrew niqqud / highlight ----------
 _HE_DIA = re.compile(r"[\u0591-\u05BD\u05BF-\u05C7]")   # ta’amim + niqqud
@@ -118,11 +130,6 @@ def strip_hebrew_diacritics(s: str) -> str:
     return _HE_DIA.sub("", s or "")
 
 def _build_strip_map(hay: str):
-    """
-    Zwraca (stripped, idx_map), gdzie idx_map[i] = indeks w oryginale
-    odpowiadający stripped[i]. Pozwala zaznaczyć **w oryginale** zakres
-    znaleziony po stripie (ignorując niqqud).
-    """
     stripped_chars = []
     idx_map = []
     for i, ch in enumerate(hay):
@@ -132,17 +139,12 @@ def _build_strip_map(hay: str):
     return "".join(stripped_chars), idx_map
 
 def highlight_hebrew(hay: str, needle: str) -> str:
-    """
-    Pogrubia wszystkie wystąpienia 'needle' w 'hay', ignorując niqqud.
-    Zachowuje oryginalne znaki (ta’amim/niqqud) w wyniku.
-    """
     if not hay or not needle:
         return hay
     Hs, map_idx = _build_strip_map(hay)
     Ns = strip_hebrew_diacritics(needle)
     if not Ns:
         return hay
-    # znajdź wszystkie nie nachodzące na siebie dopasowania
     matches = []
     start = 0
     while True:
@@ -151,14 +153,11 @@ def highlight_hebrew(hay: str, needle: str) -> str:
             break
         j = i + len(Ns) - 1
         orig_start = map_idx[i]
-        orig_end = map_idx[j] + 1  # slice end
+        orig_end = map_idx[j] + 1
         matches.append((orig_start, orig_end))
         start = j + 1
-
     if not matches:
         return hay
-
-    # sklejając – wstrzykujemy **…**
     out = []
     prev = 0
     for a, b in matches:
@@ -172,37 +171,27 @@ def highlight_hebrew(hay: str, needle: str) -> str:
     out.append(hay[prev:])
     return "".join(out)
 
-# Prosta mapa „PL bold jeśli się da”
+# Prosta mapa „PL bold” (rozszerzaj wg potrzeb)
 PL_HIGHLIGHT_HINTS = {
     "אלהים": ["Bóg", "Boga", "Bogu", "Bogiem"],
     "יהוה": ["PAN", "Pan"],
     "אדני": ["Pan", "Pana", "Panu", "Panem"],
     "ישראל": ["Izrael", "Izraela"],
     "ירושלים": ["Jerozolima", "Jerozolimy"],
-    # dopisuj w razie potrzeby
 }
 
 def highlight_polish_like(hay: str, he_query: str) -> str:
-    """
-    Pogrub słowa polskie „odpowiadające” niektórym hebrajskim tokenom.
-    To przybliżenie – działa „jak się da”.
-    """
     if not hay or not he_query:
         return hay
     tokens = he_query.split()
-    # zbierz unikalne listy słów PL do boldowania
     pl_words = set()
     for t in tokens:
         key = strip_hebrew_diacritics(t)
         pl_words.update(PL_HIGHLIGHT_HINTS.get(key, []))
-        # jeśli klucz bez niqqud występuje dosłownie (np. „אֱלֹהִים” → „אלהים”)
         pl_words.update(PL_HIGHLIGHT_HINTS.get(t, []))
     if not pl_words:
         return hay
-
-    def repl(match):
-        return f"**{match.group(0)}**"
-
+    def repl(m): return f"**{m.group(0)}**"
     out = hay
     for w in sorted(pl_words, key=len, reverse=True):
         try:
@@ -298,6 +287,41 @@ def biblia_html_to_text(full_html: str) -> str:
         return "\n".join(lines).strip()
     return _strip_tags(full_html)
 
+def clean_pl_verse_text(t: str) -> str:
+    """
+    Czyści z nadmiarowych nagłówków/mete (Księga..., (6), IB2000, ©, autor).
+    Zostawia sam tekst wersetu.
+    """
+    t = t.replace("\xa0", " ")
+    lines = [ln.strip() for ln in t.splitlines()]
+
+    DROP_PATTERNS = [
+        r"^Księga\s+\w+.*$",               # "Księga Rodzaju"
+        r"^\(?\d+\)?[.,]?$",               # "(6)" / "6" / "6."
+        r"^\d+,\d+$",                      # "1,6"
+        r"^Biblia\s+(Tysiąclecia|Warszawska|Gdańska|Poznańska|Zaremby|Paulistów|EIB|SNP).*$",
+        r"^Internetowa\s+Biblia\s+2000.*$",
+        r"^by\s+Digital\s+Gospel.*$",
+        r"^©\s*\d{4}.*$",
+        r"^\d{4}\s*–\s*\d{4}.*$",          # zakres lat
+    ]
+    drops = [re.compile(p, re.IGNORECASE) for p in DROP_PATTERNS]
+
+    kept = []
+    for ln in lines:
+        if not ln:
+            kept.append(ln)
+            continue
+        if any(p.match(ln) for p in drops):
+            continue
+        kept.append(ln)
+
+    out = "\n".join(kept)
+    # usuń wiodący numer wersetu w treści: "6. " / "6) "
+    out = re.sub(r"(?m)^\s*\d+[.)]\s*", "", out)
+    out = _compact_blank_lines(out)
+    return out
+
 async def biblia_info_get_passage(trans: str, ref: str) -> str:
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
@@ -321,6 +345,7 @@ async def biblia_info_get_passage(trans: str, ref: str) -> str:
         if status == 200 and html.strip():
             text = biblia_html_to_text(html)
             if text:
+                text = clean_pl_verse_text(text)
                 cache_set(cache_key, text)
                 return text
     raise RuntimeError(f"Błąd API PL ({last_status}). Odpowiedź: {last_snippet!r}")
@@ -342,7 +367,6 @@ def _pl_ref_from_usfm(verse_id: str) -> tuple[str, str]:
     return ref, ref
 
 def add_niqqud_hints_if_missing(query: str) -> str:
-    # prosty słownik uzupełniający (rozszerzaj wg potrzeb)
     NIQQUD_HINTS = {
         "אלהים": "אֱלֹהִים",
         "ויאמר": "וַיֹּאמֶר",
@@ -505,9 +529,6 @@ def _cache_key_search_api(trans: str, phrase: str, limit: int, page: int) -> str
     return f"searchapi|{trans}|{phrase.strip().lower()}|{limit}|{page}"
 
 async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
-    """
-    Zwraca: (hits, search_url, meta) – NIC tu nie ruszałem vs Twój kod.
-    """
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
 
@@ -634,15 +655,9 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
 
     raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}). Body: {last_body[:300]}")
 
-# ---------- KOMENDY: !werset / !fraza (Twoje – przywrócone) ----------
+# ---------- KOMENDY: !werset / !fraza ----------
 @bot.command(name="werset")
 async def werset(ctx, *, arg: str):
-    """
-    Użycie:
-      !werset J 3:16 bw
-      !werset Rdz 1:1 bg
-      !werset Obj 21:3-5 bt
-    """
     parts = arg.rsplit(" ", 1)
     if len(parts) != 2:
         await ctx.reply("Użycie: `!werset <KSIĘGA> <ROZDZIAŁ:WERS[-WERS]> <PRZEKŁAD>`\nnp. `!werset J 3:16 bw`")
@@ -658,13 +673,6 @@ async def werset(ctx, *, arg: str):
 
 @bot.command(name="fraza")
 async def fraza(ctx, *, arg: str):
-    """
-    Użycie:
-      !fraza <fraza>
-      !fraza <fraza> <kod_przekładu>
-      !fraza <fraza> <kod_przekładu> <strona>
-      !fraza <fraza> [<kod_przekładu>] all
-    """
     if not arg or not arg.strip():
         await ctx.reply("Użycie: `!fraza <FRAZA> [PRZEKŁAD] [STRONA|all]`")
         return
@@ -755,19 +763,74 @@ async def fraza(ctx, *, arg: str):
         embed.set_footer(text=ch["footer"])
         await ctx.reply(embed=embed)
 
-# ---------- NOWA KOMENDA: !fh (hebrajski, WLC, z pogrubieniem) ----------
+# ---------- PAGINACJA VIEW dla !fh ----------
+class FHResultsView(discord.ui.View):
+    def __init__(self, ctx_author_id: int, blocks: list[str], title: str, footer: str, per_page: int = 3):
+        super().__init__(timeout=180)
+        self.ctx_author_id = ctx_author_id
+        self.blocks = blocks
+        self.per_page = max(1, per_page)
+        self.page = 0
+        self.footer = footer
+        self.title = title
+
+    @property
+    def total_pages(self):
+        from math import ceil
+        return max(1, (len(self.blocks) + self.per_page - 1) // self.per_page)
+
+    def _page_slice(self):
+        a = self.page * self.per_page
+        b = min(len(self.blocks), a + self.per_page)
+        return self.blocks[a:b]
+
+    def make_embed(self):
+        chunk = "\n\n".join(self._page_slice()).strip()
+        header = f"{self.title} — strona {self.page+1}/{self.total_pages}"
+        embed = discord.Embed(title=header, description=chunk[:4000])
+        embed.set_footer(text=self.footer)
+        return embed
+
+    async def _ensure_user(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx_author_id:
+            await interaction.response.send_message("Tę paginację może obsługiwać tylko autor komendy.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="⏮︎", style=discord.ButtonStyle.secondary)
+    async def first_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._ensure_user(interaction): return
+        self.page = 0
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @discord.ui.button(label="◀︎", style=discord.ButtonStyle.secondary)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._ensure_user(interaction): return
+        if self.page > 0:
+            self.page -= 1
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @discord.ui.button(label="▶︎", style=discord.ButtonStyle.secondary)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._ensure_user(interaction): return
+        if self.page < self.total_pages - 1:
+            self.page += 1
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @discord.ui.button(label="⏭︎", style=discord.ButtonStyle.secondary)
+    async def last_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._ensure_user(interaction): return
+        self.page = self.total_pages - 1
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+# ---------- NOWA KOMENDA: !fh (hebrajski, WLC, czyste PL, paginacja) ----------
 @bot.command(name="fh")
 async def find_hebrew(ctx, *, arg: str):
     """
     !fh <hebrajski> [strona|all] [mesora]
-      - bold w HE: dokładny zakres (ignorując niqqud)
-      - bold w PL (BT/BW): „jak się da” przez PL_HIGHLIGHT_HINTS
-      - dopisz 'mesora' by nie zdejmować HTML (pełna masora w HE, bez strip)
-    Przykłady:
-      !fh ויאמר אלהים
-      !fh וַיֹּאמֶר אֱלֹהִים 2
-      !fh ויאמר אלהים all
-      !fh ויאמר אלהים all mesora
+    - czysty układ: Rdz 1:6 → HE (bold) → BT → BW
+    - czyszczenie metadanych BT/BW (nagłówki, (6), copyright)
+    - paginacja na przyciskach (domyślnie 3 wyniki/stronę)
     """
     if not arg or not arg.strip():
         await ctx.reply("Użycie: `!fh <FRAZA_HEBRAJSKA> [STRONA|all] [mesora]`")
@@ -778,7 +841,6 @@ async def find_hebrew(ctx, *, arg: str):
     fetch_all = False
     mesora_mode = False
 
-    # opcjonalny znacznik mesora
     normalized = [p.lower() for p in parts]
     for kw in ("mesora","mesorah","taamim","cantillation"):
         if kw in normalized:
@@ -798,8 +860,8 @@ async def find_hebrew(ctx, *, arg: str):
         await ctx.reply("Podaj frazę, np. `!fh ויאמר אלהים`")
         return
 
-    PER_PAGE = 10
-    MAX_ALL = 200
+    PER_PAGE_API = 10
+    MAX_ALL = 150  # bezpieczeństwo
 
     try:
         if fetch_all:
@@ -807,7 +869,7 @@ async def find_hebrew(ctx, *, arg: str):
             all_hits = []
             meta_final = None
             while True:
-                hs, meta = await api_bible_search_hebrew(raw_query, page=cur, per_page=PER_PAGE)
+                hs, meta = await api_bible_search_hebrew(raw_query, page=cur, per_page=PER_PAGE_API)
                 all_hits.extend(hs)
                 meta_final = meta
                 if not hs or cur >= meta.get("pages", 1) or len(all_hits) >= MAX_ALL:
@@ -816,7 +878,7 @@ async def find_hebrew(ctx, *, arg: str):
             hits = all_hits[:MAX_ALL]
             meta = meta_final or {"total": len(hits), "page": 1, "pages": 1}
         else:
-            hits, meta = await api_bible_search_hebrew(raw_query, page=page, per_page=PER_PAGE)
+            hits, meta = await api_bible_search_hebrew(raw_query, page=page, per_page=PER_PAGE_API)
     except Exception as e:
         await ctx.reply(f"❌ Problem z wyszukiwaniem: {e}")
         return
@@ -826,24 +888,17 @@ async def find_hebrew(ctx, *, arg: str):
         return
 
     total = meta.get("total", len(hits))
-    pages = meta.get("pages", 1)
-    cur_page = meta.get("page", page)
+    pages_api = meta.get("pages", 1)
+    cur_page_api = meta.get("page", page)
 
-    lines = []
-    lines.append(f"Znaleziono {total} wystąpień frazy «{raw_query}» w WLC.")
-    if fetch_all:
-        lines.append(f"Wyświetlono {len(hits)} wyników (limit bezpieczeństwa {MAX_ALL}).")
-    else:
-        lines.append(f"Strona {cur_page}/{pages}, {PER_PAGE} na stronę.")
-    lines.append("")
-
-    # ustal formę do pogrubienia (jeśli user dał bez niqqud – użyj hinted)
+    # forma do bold w HE
     hl_query = raw_query
     if not has_niqqud(raw_query):
         hinted = add_niqqud_hints_if_missing(raw_query)
         if hinted != raw_query:
             hl_query = hinted
 
+    # zbuduj bloki wyników
     async def build_block(v):
         verse_id = v["id"]
         he_text = await api_bible_get_he_text(verse_id, mesora=mesora_mode)
@@ -851,15 +906,8 @@ async def find_hebrew(ctx, *, arg: str):
         if not header_pl:
             header_pl = _strip_tags(v.get("reference") or verse_id)
 
-        # hej—pogrubienie w HE:
-        he_for_embed = he_text
-        if not mesora_mode:
-            he_for_embed = highlight_hebrew(he_text, hl_query)
-        else:
-            # w trybie mesora mamy HTML – spróbujmy zgrubnie usunąć tagi do porównania
-            # i pogrubić tylko w tekście (bez łamania HTML). Prościej: zostawiamy HE bez bolda
-            # by nie rozsypywać markup (jeśli chcesz bold w HTML – trzeba parsera i wstrzyknięć).
-            pass
+        # HE: bold jeśli mamy plain text; w mesora(HTML) zostawiamy jak jest
+        he_for_embed = he_text if mesora_mode else highlight_hebrew(he_text, hl_query)
 
         bt_txt = ""
         bw_txt = ""
@@ -867,44 +915,50 @@ async def find_hebrew(ctx, *, arg: str):
             try:
                 bt_txt = await biblia_info_get_passage("bt", ref_pl)
             except Exception:
-                bt_txt = "(brak odpowiedzi BT)"
+                bt_txt = ""
             try:
                 bw_txt = await biblia_info_get_passage("bw", ref_pl)
             except Exception:
-                bw_txt = "(brak odpowiedzi BW)"
+                bw_txt = ""
 
-        # bold w PL „jak się da”
         if bt_txt:
             bt_txt = highlight_polish_like(bt_txt, raw_query)
         if bw_txt:
             bw_txt = highlight_polish_like(bw_txt, raw_query)
 
-        block = [f"**{header_pl}**", he_for_embed]
+        lines = [f"**{header_pl}**", he_for_embed]
         if bt_txt:
-            block.append(f"*BT:* {bt_txt}")
+            lines.append(f"*BT:* {bt_txt}")
         if bw_txt:
-            block.append(f"*BW:* {bw_txt}")
-        return "\n".join(block).strip()
+            lines.append(f"*BW:* {bw_txt}")
+        return "\n".join(lines).strip()
 
-    results = []
     BATCH = 10
+    blocks = []
     for i in range(0, len(hits), BATCH):
         chunk = hits[i:i+BATCH]
-        blocks = await asyncio.gather(*(build_block(v) for v in chunk))
-        results.extend(blocks)
+        blocks.extend(await asyncio.gather(*(build_block(v) for v in chunk)))
 
     title = f"Wyszukiwanie (HE): «{raw_query}» — WLC"
-    footer = "Źródła: api.bible (WLC) + biblia.info.pl (BT, BW)"
-    chunks = _split_for_embeds(title, footer, lines + results, limit=4000)
+    head = []
+    head.append(f"Znaleziono {total} wystąpień.")
+    if fetch_all:
+        head.append(f"Pobrano do {len(blocks)} wyników (limit bezpieczeństwa {MAX_ALL}).")
+    else:
+        head.append(f"Strona API {cur_page_api}/{pages_api}, {PER_PAGE_API} na stronę.")
+    head.append("")  # pusty wiersz
 
-    first = True
-    for ch in chunks:
-        embed = discord.Embed(title=ch["title"], description=ch["description"])
-        if first:
-            embed.url = "https://docs.api.bible/guides/bibles"
-            first = False
-        embed.set_footer(text=ch["footer"])
-        await ctx.reply(embed=embed)
+    # pierwsza strona pokaże nagłówek + pierwsze bloki
+    footer = "Źródła: api.bible (WLC) + biblia.info.pl (BT, BW)"
+    RESULTS_PER_PAGE = 3
+
+    view = FHResultsView(ctx.author.id, blocks=blocks, title=title, footer=footer, per_page=RESULTS_PER_PAGE)
+    first_embed = discord.Embed(
+        title=f"{title} — strona 1/{view.total_pages}",
+        description="\n".join(head + blocks[:RESULTS_PER_PAGE])[:4000]
+    )
+    first_embed.set_footer(text=footer)
+    await ctx.reply(embed=first_embed, view=view)
 
 # ---------- utilities ----------
 @bot.command()
