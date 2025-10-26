@@ -23,12 +23,16 @@ INTENTS.guilds = True
 
 bot = commands.Bot(command_prefix=BOT_PREFIX, intents=INTENTS)
 
-# Pozwalamy nadpisać bazowy URL z ENV (np. proxy/CF Worker)
+# === API.BIBLE ===
+API_BIBLE_BASE = os.getenv("API_BIBLE_BASE", "https://api.scripture.api.bible/v1")
+API_BIBLE_TOKEN = os.getenv("API_BIBLE_TOKEN")  # <-- WYMAGANY
+WLC_BIBLE_ID = "0b262f1ed7f084a6-01"  # The Hebrew Bible, Westminster Leningrad Codex
+
+# === biblia.info.pl (PL przekłady) ===
 BIBLIA_INFO_BASE = os.getenv("BIBLIA_INFO_BASE", "https://www.biblia.info.pl/api")
-# Domena bez /api – do budowania linków do strony wyników
 BIBLIA_ORIGIN = re.sub(r"/api/?$", "", BIBLIA_INFO_BASE)
 
-# ---- PRZEKŁADY ----
+# ---- PRZEKŁADY biblia.info.pl ----
 BIBLIA_INFO_CODES = {
     "bw": "bw",
     "bg": "bg",
@@ -46,7 +50,6 @@ BIBLIA_INFO_CODES = {
     "nb": "ubg",  # alias
 }
 
-# Przyjazne nazwy do nagłówka
 TRANSLATION_NAMES = {
     "bw":  "Biblia Warszawska",
     "bg":  "Biblia Gdańska",
@@ -64,62 +67,27 @@ TRANSLATION_NAMES = {
     "nb":  "Uwspółcześniona Biblia Gdańska",
 }
 
-# ---- SKRÓTY KSIĄG (ST + NT) -> slug w API ----
-PRIMARY_BOOK_SLUG = {
-    # NT
-    "Mt": "mat", "Mk": "mar", "Łk": "luk", "Lk": "luk", "Łuk": "luk",
-    "J": "jan", "Jan": "jan",
-    "Dz": "dz",
-    "Rz": "rz",
-    "1Kor": "1kor", "I Kor": "1kor", "1 Kor": "1kor",
-    "2Kor": "2kor", "II Kor": "2kor", "2 Kor": "2kor",
-    "Gal": "gal", "Ef": "ef", "Flp": "flp", "Kol": "kol",
-    "1Tes": "1tes", "2Tes": "2tes",
-    "1Tm": "1tm", "2Tm": "2tm",
-    "Tt": "tt", "Flm": "flm",
-    "Hbr": "hbr", "Jak": "jak",
-    "1P": "1p", "2P": "2p",
-    "1J": "1j", "2J": "2j", "3J": "3j",
-    "Jud": "jud",
-    "Obj": "obj", "Ap": "obj",
-
-    # ST
-    "Rdz": "rdz", "Wj": "wj", "Kpł": "kpl", "Kpl": "kpl", "Lb": "lb", "Pwt": "pwt",
-    "Joz": "joz", "Sdz": "sdz", "Rut": "rut",
-    "1Sm": "1sm", "2Sm": "2sm",
-    "1Krl": "1krl", "2Krl": "2krl",
-    "1Krn": "1krn", "2Krn": "2krn",
-    "Ezd": "ezd", "Neh": "neh", "Est": "est",
-    "Hi": "hi", "Jb": "hi",
-    "Ps": "ps", "Prz": "prz", "Koh": "koh", "Pnp": "pnp",
-    "Iz": "iz", "Jer": "jer", "Lm": "lm", "Ez": "ez", "Dn": "dn",
-    "Oz": "oz", "Jl": "jl", "Am": "am", "Ab": "ab", "Jon": "jon",
-    "Mi": "mi", "Na": "na", "Ha": "ha", "So": "so",
-    "Ag": "ag", "Za": "za", "Ml": "ml",
+# ---- Mapowanie USFM → polskie skróty (dla nagłówka) ----
+USFM_TO_PL = {
+    # Pięcioksiąg
+    "GEN": "Rdz", "EXO": "Wj", "LEV": "Kpł", "NUM": "Lb", "DEU": "Pwt",
+    # Historyczne
+    "JOS": "Joz", "JDG": "Sdz", "RUT": "Rut",
+    "1SA": "1Sm", "2SA": "2Sm",
+    "1KI": "1Krl", "2KI": "2Krl",
+    "1CH": "1Krn", "2CH": "2Krn",
+    "EZR": "Ezd", "NEH": "Neh", "EST": "Est",
+    # Mądrościowe
+    "JOB": "Hi", "PSA": "Ps", "PRO": "Prz", "ECC": "Koh", "SNG": "Pnp",
+    # Prorocy więksi
+    "ISA": "Iz", "JER": "Jer", "LAM": "Lm", "EZK": "Ez", "DAN": "Dn",
+    # Prorocy mniejsi
+    "HOS": "Oz", "JOL": "Jl", "AMO": "Am", "OBA": "Ab", "JON": "Jon",
+    "MIC": "Mi", "NAM": "Na", "HAB": "Ha", "ZEP": "So",
+    "HAG": "Ag", "ZEC": "Za", "MAL": "Ml",
 }
 
-# Case-insensitive aliasy nazw ksiąg
-BOOK_ALIASES = {k.lower(): v for k, v in PRIMARY_BOOK_SLUG.items()}
-BOOK_ALIASES.update({
-    "mt": "mat", "mateusz": "mat",
-    "mk": "mar", "marka": "mar",
-    "lk": "luk", "łk": "luk", "łuk": "luk",
-    "j": "jan", "jan": "jan",
-    "ap": "obj", "apo": "obj", "apokalipsa": "obj",
-})
-
-# Warianty slugów (jeśli podstawowy da 404 – spróbujemy po kolei)
-BOOK_SLUG_VARIANTS = {
-    "jan": ["jan", "ewjan", "joan"],
-    "mat": ["mat", "ewmat"],
-    "mar": ["mar", "ewmar"],
-    "luk": ["luk", "ewluk"],
-    "obj": ["obj", "apokal", "ap"],
-}
-
-REF_RE = re.compile(r"^\s*([^\d]+)\s+(\d+):(\d+(?:-\d+)?)\s*$", re.IGNORECASE)
-
-# Prosty cache odpowiedzi (na 5 min)
+# ---------- cache ----------
 _cache: dict[str, dict] = {}
 CACHE_TTL = 300
 
@@ -135,20 +103,7 @@ def cache_get(k: str):
 def cache_set(k: str, d):
     _cache[k] = {"t": time.time(), "d": d}
 
-def parse_ref(ref: str):
-    """'J 3:16' -> ('jan', '3', '16') – case-insensitive, z aliasami."""
-    m = REF_RE.match(ref)
-    if not m:
-        return None
-    book_raw, ch, vs = m.groups()
-    key = book_raw.strip().lower()
-    primary = BOOK_ALIASES.get(key, key).lower()
-    return primary, ch, vs
-
-# ---------- ekstrakcja czystego tekstu z HTML biblia.info.pl ----------
-DIV_VERSE_RE = re.compile(r'(?is)<div[^>]*class="verse-text"[^>]*>(.*?)</div>')
-SPAN_NUM_RE = re.compile(r'(?is)<span[^>]*class="verse-number"[^>]*>(\d+)</span>')
-
+# ---------- narzędzia HTML ----------
 def _strip_tags(html: str) -> str:
     s = re.sub(r"(?is)<style.*?>.*?</style>", "", html)
     s = re.sub(r"(?is)<script.*?>.*?</script>", "", s)
@@ -157,21 +112,6 @@ def _strip_tags(html: str) -> str:
     s = re.sub(r"\r?\n[ \t]*\r?\n+", "\n", s)
     s = re.sub(r"[ \t]+", " ", s)
     return html_lib.unescape(s).strip()
-
-def biblia_html_to_text(full_html: str) -> str:
-    blocks = DIV_VERSE_RE.findall(full_html)
-    lines = []
-    if blocks:
-        for b in blocks:
-            num = SPAN_NUM_RE.search(b)
-            prefix = f"{num.group(1)}. " if num else ""
-            txt = _strip_tags(b).strip()
-            if txt:
-                if prefix and not txt.startswith(prefix):
-                    txt = prefix + txt
-                lines.append(txt)
-        return "\n".join(lines).strip()
-    return _strip_tags(full_html)
 
 # ---------- HTTP ----------
 _UAS = [
@@ -182,10 +122,37 @@ _UAS = [
 BASE_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.7,en;q=0.6",
-    "Referer": "https://www.biblia.info.pl/",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
+
+def _api_bible_headers():
+    if not API_BIBLE_TOKEN:
+        raise SystemExit("Brak API_BIBLE_TOKEN w środowisku")
+    h = dict(BASE_HEADERS)
+    h["User-Agent"] = random.choice(_UAS)
+    h["api-key"] = API_BIBLE_TOKEN
+    return h
+
+async def http_get_json(url: str, headers: dict | None = None, timeout: int = 25):
+    for attempt in range(3):
+        try:
+            async with aiohttp.ClientSession(headers=headers or BASE_HEADERS) as s:
+                async with s.get(url, timeout=timeout) as r:
+                    txt = await r.text()
+                    if r.status == 200:
+                        try:
+                            import json
+                            return r.status, json.loads(txt)
+                        except Exception:
+                            return r.status, None
+                    if r.status in (429, 500, 502, 503, 504):
+                        await asyncio.sleep(0.6 * (attempt + 1))
+                        continue
+                    return r.status, None
+        except Exception:
+            await asyncio.sleep(0.6 * (attempt + 1))
+    return 503, None
 
 async def http_get_text(url: str, timeout: int = 20):
     for attempt in range(3):
@@ -205,26 +172,53 @@ async def http_get_text(url: str, timeout: int = 20):
             await asyncio.sleep(0.7 * (attempt + 1))
     return 403, "<blocked>"
 
-# ---------- POBRANIE WERSETU ----------
+# ---------- biblia.info.pl – pojedynczy werset ----------
+REF_RE = re.compile(r"^\s*([^\d]+)\s+(\d+):(\d+(?:-\d+)?)\s*$", re.IGNORECASE)
+
+def parse_ref(ref: str):
+    m = REF_RE.match(ref)
+    if not m:
+        return None
+    book_raw, ch, vs = m.groups()
+    return book_raw.strip(), ch, vs
+
+DIV_VERSE_RE = re.compile(r'(?is)<div[^>]*class="verse-text"[^>]*>(.*?)</div>')
+SPAN_NUM_RE = re.compile(r'(?is)<span[^>]*class="verse-number"[^>]*>(\d+)</span>')
+
+def biblia_html_to_text(full_html: str) -> str:
+    blocks = DIV_VERSE_RE.findall(full_html)
+    lines = []
+    if blocks:
+        for b in blocks:
+            num = SPAN_NUM_RE.search(b)
+            prefix = f"{num.group(1)}. " if num else ""
+            txt = _strip_tags(b).strip()
+            if txt:
+                if prefix and not txt.startswith(prefix):
+                    txt = prefix + txt
+                lines.append(txt)
+        return "\n".join(lines).strip()
+    return _strip_tags(full_html)
+
 async def biblia_info_get_passage(trans: str, ref: str) -> str:
     if trans not in BIBLIA_INFO_CODES:
         raise ValueError(f"Nieznany przekład: {trans}")
-
     parsed = parse_ref(ref)
     if not parsed:
-        raise ValueError("Nieprawidłowa referencja (użyj np. 'J 3:16' lub 'Obj 21:3-5').")
-
-    primary_slug, ch, vs = parsed
-    candidates = BOOK_SLUG_VARIANTS.get(primary_slug, [primary_slug])
-
-    cache_key = f"biblia_info|{trans}|{primary_slug}|{ch}|{vs}"
+        raise ValueError("Nieprawidłowa referencja (np. 'Rdz 1:1').")
+    book_pl, ch, vs = parsed
+    cache_key = f"biblia_info|{trans}|{book_pl}|{ch}|{vs}"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
-    last_status = None
-    last_snippet = ""
-    for slug in candidates:
+    # Spróbuj kilku wariantów slugu PL (część nazw ma znaki PL)
+    slug_try = [
+        # typowe polskie skróty już są prawidłowe jako slug w biblia.info.pl
+        book_pl.lower().replace("ł", "l").replace("ś", "s").replace("ż", "z").replace("ź","z"),
+        book_pl.lower()
+    ]
+    last_status, last_snippet = None, ""
+    for slug in slug_try:
         url = f"{BIBLIA_INFO_BASE}/werset/{BIBLIA_INFO_CODES[trans]}/{slug}/{ch}/{vs}"
         status, html = await http_get_text(url)
         last_status, last_snippet = status, (html or "")[:120].replace("\n", " ")
@@ -233,225 +227,10 @@ async def biblia_info_get_passage(trans: str, ref: str) -> str:
             if text:
                 cache_set(cache_key, text)
                 return text
+    raise RuntimeError(f"Błąd API PL ({last_status}). Odpowiedź: {last_snippet!r}")
 
-    raise RuntimeError(f"Błąd API ({last_status}). Odpowiedź: {last_snippet!r}")
-
-# ---------- WYSZUKIWANIE ----------
-def _cache_key_search_api(trans: str, phrase: str, limit: int, page: int) -> str:
-    return f"searchapi|{trans}|{phrase.strip().lower()}|{limit}|{page}"
-
-def _highlight(hay: str, needle: str) -> str:
-    if not hay or not needle:
-        return hay
-    words = [w for w in re.split(r"\s+", needle.strip()) if w]
-    def repl(m): return f"**{m.group(0)}**"
-    for w in sorted(words, key=len, reverse=True):
-        try:
-            hay = re.sub(re.escape(w), repl, hay, flags=re.IGNORECASE)
-        except re.error:
-            pass
-    return hay
-
-# --- helpery do „dziwnych” odpowiedzi API ---
-_TEXT_KEY_RE = re.compile(r'(?is)(["\'“”]text["\'“”]\s*:\s*["\'“”])(.*?)(["\'“”])')
-
-def _coerce_text_block(raw) -> str:
-    """
-    Zwraca czysty tekst (bez numerów wersetów).
-    """
-    if isinstance(raw, list):
-        parts = []
-        for it in raw:
-            if isinstance(it, dict):
-                vtx = str(it.get("text") or "")
-                if vtx:
-                    parts.append(vtx)
-            elif isinstance(it, str):
-                parts.append(it)
-        return " ".join(parts)
-
-    if isinstance(raw, dict):
-        return str(raw.get("text") or "")
-
-    if isinstance(raw, str) and "text" in raw and ("[" in raw or "{" in raw):
-        try:
-            parsed = ast.literal_eval(raw)
-            return _coerce_text_block(parsed)
-        except Exception:
-            texts = [m.group(2) for m in _TEXT_KEY_RE.finditer(raw)]
-            if texts:
-                return " ".join(texts)
-
-    return "" if raw is None else str(raw)
-
-def _is_texty(s: str) -> bool:
-    if not s:
-        return False
-    s = s.strip()
-    return len(s) >= 5 and re.search(r"[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]", s) is not None
-
-def _extract_all_texts_from_any(raw: str) -> str:
-    if not isinstance(raw, str):
-        return ""
-    parts = [m.group(2) for m in _TEXT_KEY_RE.finditer(raw)]
-    return " ".join([p for p in parts if p])
-
-async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5, page: int = 1):
-    """
-    Zwraca: (hits, search_url, meta)
-    meta = {total, start, end, page, limit}
-    """
-    if trans not in BIBLIA_INFO_CODES:
-        raise ValueError(f"Nieznany przekład: {trans}")
-
-    phrase = phrase.strip()
-    if not phrase:
-        raise ValueError("Podaj frazę do wyszukania.")
-
-    page = max(1, int(page))
-    # większy sensowny limit na stronę
-    limit = max(1, min(25, int(limit)))
-
-    ck = _cache_key_search_api(trans, phrase, limit, page)
-    cached = cache_get(ck)
-    if cached:
-        return cached
-
-    code = BIBLIA_INFO_CODES[trans]
-    q_path = quote(phrase, safe="")
-    API_BASE = BIBLIA_INFO_BASE
-    ORIGIN = BIBLIA_ORIGIN
-    search_page_url = f"{ORIGIN}/szukaj.php?st={quote_plus(phrase)}&tl={code}&p={page}"
-
-    urls = [
-        f"{API_BASE}/search/{code}/{q_path}?page={page}&limit={limit}",
-        f"{API_BASE}/szukaj/{code}/{q_path}?page={page}&limit={limit}",
-    ]
-
-    import json
-    last_status, last_body = None, ""
-
-    def _longest_string_record(rec: dict) -> str:
-        ban = {"book", "chapter", "rozdzial", "verse", "verses", "werset", "wersety", "range"}
-        cand = [str(v) for k, v in rec.items() if k not in ban and isinstance(v, str)]
-        return max(cand, key=len).strip() if cand else ""
-
-    def _to_int(x):
-        try:
-            return int(str(x).strip())
-        except Exception:
-            return None
-
-    out = []
-    total_all = None
-    range_start = None
-    range_end = None
-
-    for url in urls:
-        status, body = await http_get_text(url, timeout=20)
-        last_status, last_body = status, (body or "")[:1000].replace("\n", " ")
-        if status != 200 or not body:
-            continue
-
-        try:
-            data = json.loads(body)
-        except Exception:
-            continue
-
-        # łączna liczba wyników
-        if isinstance(data, dict):
-            for k in ("all_results", "total_results", "total", "hits_total", "count"):
-                if k in data and total_all is None:
-                    total_all = _to_int(data.get(k))
-            # zakres zwrócony przez API
-            rstr = (data.get("results_range") or data.get("range") or "").strip()
-            m = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", str(rstr))
-            if m:
-                range_start, range_end = int(m.group(1)), int(m.group(2))
-
-        # wybór tablicy wyników
-        seq = []
-        if isinstance(data, dict):
-            for key in ("results", "hits", "data", "items"):
-                if isinstance(data.get(key), list):
-                    seq = data[key]
-                    break
-        elif isinstance(data, list):
-            seq = data
-
-        for r in seq:
-            if not isinstance(r, dict):
-                continue
-
-            # --- księga / rozdział / werset ---
-            book = r.get("book") or {}
-            b_disp = (
-                book.get("abbreviation") or book.get("abbr") or book.get("short")
-                or book.get("short_name") or book.get("name") or ""
-            ).strip().upper()
-            chapter = str(r.get("chapter") or r.get("rozdzial") or "").strip()
-
-            verse_raw = (
-                r.get("verse") or r.get("verses") or r.get("werset")
-                or r.get("wersety") or r.get("range") or ""
-            )
-            verse = str(verse_raw).strip().replace(",", ":")
-            if "[" in verse or "{" in verse:
-                m = re.search(r"\b(\d+)\b", verse)
-                verse = m.group(1) if m else ""
-
-            # --- tekst: normalnie → awaryjnie → sanity check ---
-            raw_text = (
-                r.get("text") or r.get("content") or r.get("snippet") or
-                r.get("fragment") or r.get("tekst") or r.get("tresc") or r.get("html") or ""
-            )
-            txt = _coerce_text_block(raw_text)
-            if not _is_texty(txt):
-                txt = _extract_all_texts_from_any(str(r))
-            if not _is_texty(txt):
-                candidate = _longest_string_record(r)
-                txt = candidate if _is_texty(candidate) else ""
-
-            if txt:
-                txt = html_lib.unescape(txt)
-                txt = re.sub(r"(?is)</?strong[^>]*>", "", txt)
-                txt = _strip_tags(txt).strip()
-
-            if verse and txt:
-                txt = re.sub(rf"^\s*{re.escape(verse)}[.)]\s*", "", txt)
-
-            if not (b_disp and chapter and verse and _is_texty(txt)):
-                continue
-
-            ref = f"{b_disp} {chapter}:{verse}"
-            out.append({"ref": ref, "snippet": txt})
-
-        if out:
-            # jeśli API nie podało zakresu – policz
-            if range_start is None or range_end is None:
-                range_start = (page - 1) * limit + 1
-                range_end = range_start + len(out) - 1
-                if total_all and range_end > total_all:
-                    range_end = total_all
-
-            meta = {
-                "page": page,
-                "limit": limit,
-                "total": total_all if total_all is not None else len(out),
-                "start": range_start,
-                "end": range_end,
-            }
-
-            for h in out:
-                h["snippet"] = _highlight(h["snippet"], phrase)
-
-            cache_set(ck, (out, search_page_url, meta))
-            return out, search_page_url, meta
-
-    raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}). Body: {last_body[:300]}")
-
+# ---------- api.bible – wyszukiwanie i pobranie wersetów (HE) ----------
 def _split_for_embeds(title: str, footer: str, lines: list[str], limit: int = 4000):
-    """Dzieli listę linii na porcje <= limit dla Discord embed.description."""
     chunks = []
     buf = ""
     for line in lines:
@@ -465,131 +244,216 @@ def _split_for_embeds(title: str, footer: str, lines: list[str], limit: int = 40
         chunks.append({"title": title, "description": buf.rstrip(), "footer": footer})
     return chunks
 
-# --------------- komendy ---------------
-@bot.command(name="werset")
-async def werset(ctx, *, arg: str):
+def _parse_verse_id(verse_id: str):
     """
-    Użycie:
-      !werset J 3:16 bw
-      !werset Rdz 1:1 bg
-      !werset Obj 21:3-5 bt
+    Rozbija ID typu GEN.1.1 -> (GEN, 1, 1)
     """
-    parts = arg.rsplit(" ", 1)
-    if len(parts) != 2:
-        await ctx.reply("Użycie: `!werset <KSIĘGA> <ROZDZIAŁ:WERS[-WERS]> <PRZEKŁAD>`\nnp. `!werset J 3:16 bw`")
-    else:
-        ref, trans = parts[0].strip(), parts[1].strip().lower()
-        try:
-            txt = await biblia_info_get_passage(trans, ref)
-            embed = discord.Embed(title=f"{ref} — {trans.upper()}", description=txt[:4000])
-            embed.set_footer(text="Źródło: biblia.info.pl")
-            await ctx.reply(embed=embed)
-        except Exception as e:
-            await ctx.reply(f"❌ {e}")
+    # czasem mogą być zakresy; tu bierzemy pierwszy
+    base = verse_id.split("-")[0]
+    parts = base.split(".")
+    if len(parts) >= 3:
+        book, ch, vs = parts[0], parts[1], parts[2]
+        return book, ch, vs
+    return None, None, None
 
-@bot.command(name="fraza")
-async def fraza(ctx, *, arg: str):
+def _pl_ref_from_usfm(verse_id: str) -> tuple[str, str]:
+    """
+    Zwraca (ref_pl, naglowek_pl): np. ("Rdz 1:1", "Rodzaju 1:1") – tu nagłówek użyje skrótu.
+    """
+    book, ch, vs = _parse_verse_id(verse_id)
+    if not (book and ch and vs):
+        return "", ""
+    pl_abbr = USFM_TO_PL.get(book, book)
+    ref = f"{pl_abbr} {ch}:{vs}"
+    header = f"{pl_abbr} {ch}:{vs}"
+    return ref, header
+
+async def api_bible_search_hebrew(query: str, page: int = 1, per_page: int = 10):
+    """
+    Zwraca (hits, meta) gdzie hits = [{verseId, bookId, reference, snippet?}]
+    """
+    page = max(1, int(page))
+    per_page = max(1, min(25, int(per_page)))
+    offset = (page - 1) * per_page
+    ck = f"api_bible_search|{query}|{page}|{per_page}"
+    cached = cache_get(ck)
+    if cached:
+        return cached
+    q = quote_plus(query)
+    url = (f"{API_BIBLE_BASE}/bibles/{WLC_BIBLE_ID}/search?"
+           f"query={q}&offset={offset}&limit={per_page}&sort=relevance")
+    status, data = await http_get_json(url, headers=_api_bible_headers(), timeout=25)
+    if status != 200 or not isinstance(data, dict):
+        raise RuntimeError(f"api.bible search fail: {status}")
+    d = data.get("data") or {}
+    total = int(d.get("total", 0))
+    lim = int(d.get("limit", per_page))
+    off = int(d.get("offset", offset))
+    verses = d.get("verses") or []
+    hits = []
+    for v in verses:
+        verse_id = v.get("id") or ""
+        ref_txt = str(v.get("reference") or "")
+        hits.append({
+            "id": verse_id,
+            "reference": ref_txt,
+        })
+    meta = {
+        "page": page,
+        "limit": lim,
+        "offset": off,
+        "total": total,
+        "pages": (total + lim - 1) // lim if lim else 1
+    }
+    cache_set(ck, (hits, meta))
+    return hits, meta
+
+async def api_bible_get_he_text(verse_id: str) -> str:
+    """
+    Pobiera czysty tekst hebrajski pojedynczego wersetu (bez numerów).
+    """
+    ck = f"api_bible_verse|{verse_id}"
+    cached = cache_get(ck)
+    if cached:
+        return cached
+    # content-type=text usuwa HTML; include-verse-numbers=false -> sam tekst
+    url = (f"{API_BIBLE_BASE}/bibles/{WLC_BIBLE_ID}/verses/{verse_id}"
+           f"?content-type=text&include-verse-numbers=false&include-titles=false"
+           f"&include-notes=false&include-chapter-numbers=false")
+    status, data = await http_get_json(url, headers=_api_bible_headers(), timeout=25)
+    if status != 200 or not isinstance(data, dict):
+        raise RuntimeError(f"api.bible verse fail: {status}")
+    text = (data.get("data") or {}).get("content") or ""
+    text = _strip_tags(text).strip()
+    cache_set(ck, text)
+    return text
+
+# ---------- Komenda: !fh (find Hebrew) ----------
+@bot.command(name="fh")
+async def find_hebrew(ctx, *, arg: str):
     """
     Użycie:
-      !fraza <fraza>
-      !fraza <fraza> <kod_przekładu>
-      !fraza <fraza> <kod_przekładu> <strona>
-      !fraza <fraza> [<kod_przekładu>] all   -> pobierz wszystkie strony (do 10)
+      !fh <fraza_hebrajska> [strona|all]
+      np. !fh ויאמר אלהים
+      np. !fh ויאמר אלהים 3
+      np. !fh ויאמר אלהים all
     """
     if not arg or not arg.strip():
-        await ctx.reply("Użycie: `!fraza <FRAZA> [PRZEKŁAD] [STRONA|all]`")
+        await ctx.reply("Użycie: `!fh <FRAZA_HEBRAJSKA> [STRONA|all]`")
         return
 
-    PAGE_SIZE = 25
     parts = arg.strip().split()
     page = 1
-    trans = "bw"
     fetch_all = False
 
-    # "all" / "wszystko" na końcu włącza ściąganie wszystkich stron
-    if parts[-1].lower() in ("all", "wsz", "wszystko"):
+    if parts and parts[-1].lower() in ("all", "wsz", "wszystko"):
         fetch_all = True
         parts = parts[:-1]
-
-    if parts and parts[-1].isdigit():
+    elif parts and parts[-1].isdigit():
         page = max(1, int(parts[-1]))
-        parts = parts[:-1]
-
-    if parts and parts[-1].lower() in BIBLIA_INFO_CODES:
-        trans = parts[-1].lower()
         parts = parts[:-1]
 
     phrase = " ".join(parts).strip()
     if not phrase:
-        await ctx.reply("Podaj frazę do wyszukania, np. `!fraza tak bowiem Bóg umiłował świat`")
+        await ctx.reply("Podaj frazę do wyszukania, np. `!fh ויאמר אלהים`")
         return
 
-    hits_all = []
-    meta_last = None
-    search_url = None
+    PER_PAGE = 10         # wyniki na stronę (bezpiecznie, bo dla każdego ściągamy 3 wersje tekstu)
+    MAX_ALL = 200         # twardy limit dla "all", by nie floodować kanału
 
     try:
         if fetch_all:
-            cur = page
-            for _ in range(10):  # safety: max 10 stron naraz
-                hits, search_url, meta = await biblia_info_search_phrase_api(
-                    trans, phrase, limit=PAGE_SIZE, page=cur
-                )
-                if not hits:
-                    break
-                hits_all.extend(hits)
-                meta_last = meta
-                # koniec?
-                if meta.get("end") and meta.get("total") and meta["end"] >= meta["total"]:
+            cur = 1
+            all_hits = []
+            meta_final = None
+            while True:
+                hits, meta = await api_bible_search_hebrew(phrase, page=cur, per_page=PER_PAGE)
+                all_hits.extend(hits)
+                meta_final = meta
+                if not hits or (len(all_hits) >= MAX_ALL) or cur >= meta.get("pages", 1):
                     break
                 cur += 1
+            hits = all_hits[:MAX_ALL]
+            meta = meta_final or {"total": len(hits), "page": 1, "pages": 1, "limit": PER_PAGE}
         else:
-            hits_all, search_url, meta_last = await biblia_info_search_phrase_api(
-                trans, phrase, limit=PAGE_SIZE, page=page
-            )
+            hits, meta = await api_bible_search_hebrew(phrase, page=page, per_page=PER_PAGE)
     except Exception as e:
-        await ctx.reply("Brak wyników albo problem z wyszukiwarką. Spróbuj inne parametry lub za chwilę.")
-        print(f"[fraza] error: {type(e).__name__}: {e}", flush=True)
+        await ctx.reply(f"❌ Problem z wyszukiwaniem: {e}")
         return
 
-    if not hits_all:
+    if not hits:
         await ctx.reply("Brak wyników.")
         return
 
-    trans_name = TRANSLATION_NAMES.get(trans, trans.upper())
-    total = meta_last.get("total") if meta_last else len(hits_all)
-    # gdy fetch_all – pokazujemy pełen zakres 1..N, inaczej zakres z meta
+    total = meta.get("total", len(hits))
+    pages = meta.get("pages", 1)
+    cur_page = meta.get("page", page)
+
+    # Zbieramy linie do embeda – dla każdego wersetu: nagłówek PL, tekst HE, BT i BW
+    lines = []
+    lines.append(f"Znaleziono {total} wystąpień frazy «{phrase}» w WLC (hebr.).")
     if fetch_all:
-        start, end = 1, len(hits_all)
-        title = f"Wyniki („{phrase}”) — {trans.upper()} — wszystkie ({end} z {total})"
+        shown = min(len(hits), MAX_ALL)
+        lines.append(f"Wyświetlono {shown} wyników (pełne «all», limit bezpieczeństwa {MAX_ALL}).")
     else:
-        start = meta_last.get("start") or 1
-        end = meta_last.get("end") or (start + len(hits_all) - 1)
-        title = f"Wyniki („{phrase}”) — {trans.upper()} — strona {page}"
+        lines.append(f"Strona {cur_page}/{pages}, {PER_PAGE} na stronę.")
+    lines.append("")
 
-    summary_line = (
-        f"Znaleziono {total} wystąpień frazy «{phrase}» "
-        f"w tłumaczeniu {trans_name}. Wyświetlono wyniki {start}–{end}."
-    )
+    # Pobieramy treści równolegle (hebrajski + 2xPL)
+    async def build_block(v):
+        verse_id = v["id"]
+        he_text = await api_bible_get_he_text(verse_id)
+        ref_pl, header_pl = _pl_ref_from_usfm(verse_id)
+        # jeśli nie udało się zmapować – użyj referencji z api.bible
+        if not header_pl:
+            header_pl = _strip_tags(v.get("reference") or verse_id)
 
-    lines = [summary_line, ""]
-    for h in hits_all:
-        ref = h.get("ref", "—")
-        snip = (h.get("snippet") or "").strip()
-        lines.append(f"**{ref}** — {snip}")
+        bt_txt = ""
+        bw_txt = ""
+        if ref_pl:
+            try:
+                bt_txt = await biblia_info_get_passage("bt", ref_pl)
+            except Exception:
+                bt_txt = "(brak odpowiedzi BT)"
+            try:
+                bw_txt = await biblia_info_get_passage("bw", ref_pl)
+            except Exception:
+                bw_txt = "(brak odpowiedzi BW)"
 
-    footer = "Źródło: biblia.info.pl (API search)"
+        block = []
+        block.append(f"**{header_pl}**")           # nagłówek PL (księga/rozdział/wers)
+        block.append(he_text if he_text else "(brak tekstu HE)")
+        if bt_txt:
+            block.append(f"*BT:* {bt_txt}")
+        if bw_txt:
+            block.append(f"*BW:* {bw_txt}")
+        return "\n".join(block).strip()
+
+    # jeżeli to "all" – nie rób 200*3 requestów naraz; batching
+    results = []
+    BATCH = 10
+    for i in range(0, len(hits), BATCH):
+        chunk = hits[i:i+BATCH]
+        blocks = await asyncio.gather(*(build_block(v) for v in chunk))
+        results.extend(blocks)
+
+    lines.extend(results)
+
+    title = f"Wyszukiwanie (HE): «{phrase}» — WLC"
+    footer = "Źródła: api.bible (WLC) + biblia.info.pl (BT, BW)"
     chunks = _split_for_embeds(title, footer, lines, limit=4000)
 
     first = True
     for ch in chunks:
         embed = discord.Embed(title=ch["title"], description=ch["description"])
-        if first and search_url:
-            embed.url = search_url
+        if first:
+            # link informacyjny (do api.bible docs)
+            embed.url = "https://docs.api.bible/guides/bibles"
             first = False
         embed.set_footer(text=ch["footer"])
         await ctx.reply(embed=embed)
 
+# ---------- proste util-komendy ----------
 @bot.command()
 async def ping(ctx):
     await ctx.reply("pong")
@@ -612,7 +476,7 @@ async def komendy(ctx):
     names = [c.name for c in bot.commands]
     await ctx.reply(", ".join(sorted(names)))
 
-# --------------- eventy / logi ---------------
+# ---------- eventy ----------
 @bot.event
 async def on_message(message: discord.Message):
     await bot.process_commands(message)
@@ -629,8 +493,11 @@ async def on_ready():
     print(f"✅ Bot zalogowany jako {bot.user} (id={bot.user.id})", flush=True)
     print("➡️ Serwery:", [g.name for g in bot.guilds], flush=True)
 
-# --------------- start ---------------
+# ---------- start ----------
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not TOKEN:
     raise SystemExit("Brak DISCORD_BOT_TOKEN w środowisku")
+if not API_BIBLE_TOKEN:
+    raise SystemExit("Brak API_BIBLE_TOKEN w środowisku (api.bible)")
 bot.run(TOKEN)
+
