@@ -289,37 +289,37 @@ def biblia_html_to_text(full_html: str) -> str:
 
 def clean_pl_verse_text(t: str) -> str:
     """
-    Czyści z nadmiarowych nagłówków/mete (Księga..., (6), IB2000, ©, autor).
+    Czyści z nadmiarowych nagłówków/mety (Księga..., (6), 46:2, 3,4, lata 1998–2023, IB2000, ©, autor).
     Zostawia sam tekst wersetu.
     """
-    t = t.replace("\xa0", " ")
+    t = (t or "").replace("\xa0", " ")
     lines = [ln.strip() for ln in t.splitlines()]
 
     DROP_PATTERNS = [
-        r"^Księga\s+\w+.*$",               # "Księga Rodzaju"
-        r"^\(?\d+\)?[.,]?$",               # "(6)" / "6" / "6."
-        r"^\d+,\d+$",                      # "1,6"
+        r"^Księga\s+\w+.*$",
+        r"^\(?\d+\)?[.,]?$",
+        r"^\d+\s*[:.,]\s*\d+\s*,?$",
         r"^Biblia\s+(Tysiąclecia|Warszawska|Gdańska|Poznańska|Zaremby|Paulistów|EIB|SNP).*$",
         r"^Internetowa\s+Biblia\s+2000.*$",
+        r"^(BT|BW|BG|UBG|BP|BZ|NP|PD|NPW|EIB|SNP|TOR|WB)\s*:.*$",
         r"^by\s+Digital\s+Gospel.*$",
-        r"^©\s*\d{4}.*$",
-        r"^\d{4}\s*–\s*\d{4}.*$",          # zakres lat
+        r"^©.*$",
+        r"^\d{4}(?:\s*[–\-]\s*\d{4})?$",
+        r"^[,.;·]+$"
     ]
     drops = [re.compile(p, re.IGNORECASE) for p in DROP_PATTERNS]
 
     kept = []
     for ln in lines:
         if not ln:
-            kept.append(ln)
             continue
         if any(p.match(ln) for p in drops):
             continue
         kept.append(ln)
 
     out = "\n".join(kept)
-    # usuń wiodący numer wersetu w treści: "6. " / "6) "
-    out = re.sub(r"(?m)^\s*\d+[.)]\s*", "", out)
-    out = _compact_blank_lines(out)
+    out = re.sub(r"(?m)^\s*\d+[.)]\s*", "", out)  # wiodący "6. "
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
     return out
 
 async def biblia_info_get_passage(trans: str, ref: str) -> str:
@@ -823,13 +823,13 @@ class FHResultsView(discord.ui.View):
         self.page = self.total_pages - 1
         await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
-# ---------- NOWA KOMENDA: !fh (hebrajski, WLC, czyste PL, paginacja) ----------
+# ---------- KOMENDA: !fh (hebrajski, WLC, czyste PL, paginacja) ----------
 @bot.command(name="fh")
 async def find_hebrew(ctx, *, arg: str):
     """
     !fh <hebrajski> [strona|all] [mesora]
-    - czysty układ: Rdz 1:6 → HE (bold) → BT → BW
-    - czyszczenie metadanych BT/BW (nagłówki, (6), copyright)
+    - czysty układ: Rdz 1:6 → HE (bold) → (pusta linia) → BT → BW
+    - czyszczenie metadanych BT/BW (nagłówki, (6), 46:2, lata/copyright)
     - paginacja na przyciskach (domyślnie 3 wyniki/stronę)
     """
     if not arg or not arg.strip():
@@ -906,7 +906,6 @@ async def find_hebrew(ctx, *, arg: str):
         if not header_pl:
             header_pl = _strip_tags(v.get("reference") or verse_id)
 
-        # HE: bold jeśli mamy plain text; w mesora(HTML) zostawiamy jak jest
         he_for_embed = he_text if mesora_mode else highlight_hebrew(he_text, hl_query)
 
         bt_txt = ""
@@ -927,6 +926,7 @@ async def find_hebrew(ctx, *, arg: str):
             bw_txt = highlight_polish_like(bw_txt, raw_query)
 
         lines = [f"**{header_pl}**", he_for_embed]
+        lines.append("")  # odstęp między HE a tłumaczeniami
         if bt_txt:
             lines.append(f"*BT:* {bt_txt}")
         if bw_txt:
@@ -948,7 +948,6 @@ async def find_hebrew(ctx, *, arg: str):
         head.append(f"Strona API {cur_page_api}/{pages_api}, {PER_PAGE_API} na stronę.")
     head.append("")  # pusty wiersz
 
-    # pierwsza strona pokaże nagłówek + pierwsze bloki
     footer = "Źródła: api.bible (WLC) + biblia.info.pl (BT, BW)"
     RESULTS_PER_PAGE = 3
 
