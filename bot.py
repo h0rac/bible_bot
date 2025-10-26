@@ -766,7 +766,7 @@ async def fraza(ctx, *, arg: str):
 # ---------- PAGINACJA VIEW dla !fh ----------
 class FHResultsView(discord.ui.View):
     def __init__(self, ctx_author_id: int, blocks: list[str], title: str, footer: str, per_page: int = 3):
-        super().__init__(timeout=180)
+        super().__init__(timeout=900)
         self.ctx_author_id = ctx_author_id
         self.blocks = blocks
         self.per_page = max(1, per_page)
