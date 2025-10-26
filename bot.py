@@ -383,10 +383,6 @@ def add_niqqud_hints_if_missing(query: str) -> str:
     return " ".join(out)
 
 async def api_bible_search_hebrew(query: str, page: int = 1, per_page: int = 10):
-    """
-    Zwraca (hits, meta); hits = [{id, reference}]
-    Uwaga: 'offset' = numer strony (0-based) w api.bible.
-    """
     page = max(1, int(page))
     per_page = max(1, min(25, int(per_page)))
     api_offset = page - 1
@@ -415,7 +411,6 @@ async def api_bible_search_hebrew(query: str, page: int = 1, per_page: int = 10)
     if status == 200 and isinstance(data, dict):
         hits, meta = _extract(data)
 
-    # retry: jeśli 0 wyników i brak niqqud – podpowiedz
     if (not hits) and has_hebrew_letters(query) and not has_niqqud(query):
         hinted = add_niqqud_hints_if_missing(query)
         if hinted != query:
@@ -428,10 +423,6 @@ async def api_bible_search_hebrew(query: str, page: int = 1, per_page: int = 10)
     return hits, meta
 
 async def api_bible_get_he_text(verse_id: str, mesora: bool = False) -> str:
-    """
-    Tekst HE wersetu; mesora=True => HTML (zachowane wszystkie znaczniki),
-    mesora=False => plain text (Unicode) – nadal z niqqud/ta’amim.
-    """
     key = f"api_bible_verse|{verse_id}|{'mes' if mesora else 'txt'}"
     cached = cache_get(key)
     if cached:
@@ -655,12 +646,12 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
 
     raise RuntimeError(f"Brak wyników lub nierozpoznany format API (status {last_status}). Body: {last_body[:300]}")
 
-# ---------- KOMENDY: !werset / !fraza ----------
-@bot.command(name="werset")
+# ---------- KOMENDY: !w / !fp ----------
+@bot.command(name="w")
 async def werset(ctx, *, arg: str):
     parts = arg.rsplit(" ", 1)
     if len(parts) != 2:
-        await ctx.reply("Użycie: `!werset <KSIĘGA> <ROZDZIAŁ:WERS[-WERS]> <PRZEKŁAD>`\nnp. `!werset J 3:16 bw`")
+        await ctx.reply("Użycie: `!w <KSIĘGA> <ROZDZIAŁ:WERS[-WERS]> <PRZEKŁAD>`\nnp. `!w J 3:16 bw`")
     else:
         ref, trans = parts[0].strip(), parts[1].strip().lower()
         try:
@@ -671,10 +662,10 @@ async def werset(ctx, *, arg: str):
         except Exception as e:
             await ctx.reply(f"❌ {e}")
 
-@bot.command(name="fraza")
+@bot.command(name="fp")
 async def fraza(ctx, *, arg: str):
     if not arg or not arg.strip():
-        await ctx.reply("Użycie: `!fraza <FRAZA> [PRZEKŁAD] [STRONA|all]`")
+        await ctx.reply("Użycie: `!fp <FRAZA> [PRZEKŁAD] [STRONA|all]`")
         return
 
     PAGE_SIZE = 25
@@ -695,7 +686,7 @@ async def fraza(ctx, *, arg: str):
 
     phrase = " ".join(parts).strip()
     if not phrase:
-        await ctx.reply("Podaj frazę do wyszukania, np. `!fraza tak bowiem Bóg umiłował świat`")
+        await ctx.reply("Podaj frazę do wyszukania, np. `!fp tak bowiem Bóg umiłował świat`")
         return
 
     hits_all = []
@@ -765,24 +756,23 @@ async def fraza(ctx, *, arg: str):
 
 # ---------- PAGINACJA VIEW dla !fh ----------
 class FHResultsView(discord.ui.View):
-    def __init__(self, ctx_author_id: int, blocks: list[str], title: str, footer: str, per_page: int = 3):
-        super().__init__(timeout=900)
+    def __init__(self, ctx_author_id: int, blocks: list[str], title: str, footer: str, per_page: int = 3, head_lines: list[str] | None = None):
+        super().__init__(timeout=900)  # do 15 min
         self.ctx_author_id = ctx_author_id
         self.blocks = blocks
         self.per_page = max(1, per_page)
         self.page = 0
         self.footer = footer
         self.title = title
-
-        # Czy blokować na autora? 0/1 z ENV (domyślnie: NIE blokuj).
+        self.head_lines = head_lines or []
+        self.message: discord.Message | None = None  # <- tu będzie przypis
+        # publiczne klikanie + cooldown
         self.locked_to_author = os.getenv("FH_LOCKED_TO_AUTHOR", "0") in ("1", "true", "yes")
-        # Anty-spam: cooldown (sekundy) per user
         self.cooldown = 1.5
         self._last_click_per_user: dict[int, float] = {}
 
     @property
     def total_pages(self):
-        from math import ceil
         return max(1, (len(self.blocks) + self.per_page - 1) // self.per_page)
 
     def _page_slice(self):
@@ -791,29 +781,38 @@ class FHResultsView(discord.ui.View):
         return self.blocks[a:b]
 
     def make_embed(self):
-        chunk = "\n\n".join(self._page_slice()).strip()
+        parts = []
+        if self.page == 0 and self.head_lines:
+            parts.append("\n".join(self.head_lines).strip())
+        parts.append("\n\n".join(self._page_slice()).strip())
+        desc = "\n\n".join([p for p in parts if p]).strip()
+
         header = f"{self.title} — strona {self.page+1}/{self.total_pages}"
-        embed = discord.Embed(title=header, description=chunk[:4000])
+        embed = discord.Embed(title=header, description=desc[:4000])
         embed.set_footer(text=self.footer)
         return embed
 
     async def _can_interact(self, interaction: discord.Interaction) -> bool:
-        # 1) opcjonalna blokada do autora (włączana ENV)
         if self.locked_to_author and interaction.user.id != self.ctx_author_id:
-            await interaction.response.send_message(
-                "Tę paginację może obsługiwać tylko autor komendy (ustawienie FH_LOCKED_TO_AUTHOR).",
-                ephemeral=True
-            )
+            await interaction.response.send_message("Tę paginację może obsługiwać tylko autor (FH_LOCKED_TO_AUTHOR).", ephemeral=True)
             return False
-        # 2) prosty cooldown per user
-        import time as _t
-        now = _t.time()
+        now = time.time()
         last = self._last_click_per_user.get(interaction.user.id, 0.0)
         if now - last < self.cooldown:
-            await interaction.response.send_message("Daj mi sekundkę… (cooldown)", ephemeral=True)
+            await interaction.response.send_message("Daj sekundkę… (cooldown)", ephemeral=True)
             return False
         self._last_click_per_user[interaction.user.id] = now
         return True
+
+    async def on_timeout(self):
+        # wyszarz przyciski, zedytuj wiadomość
+        for child in self.children:
+            child.disabled = True
+        try:
+            if self.message:
+                await self.message.edit(view=self)
+        except Exception:
+            pass
 
     @discord.ui.button(label="⏮︎", style=discord.ButtonStyle.secondary)
     async def first_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -846,9 +845,9 @@ class FHResultsView(discord.ui.View):
 async def find_hebrew(ctx, *, arg: str):
     """
     !fh <hebrajski> [strona|all] [mesora]
-    - czysty układ: Rdz 1:6 → HE (bold) → (pusta linia) → BT → BW
-    - czyszczenie metadanych BT/BW (nagłówki, (6), 46:2, lata/copyright)
-    - paginacja na przyciskach (domyślnie 3 wyniki/stronę)
+    - Rdz 1:6 → HE (bold) → (pusta linia) → BT → (pusta) → BW
+    - PL czyszczone z nagłówków/linii lat/copyright
+    - paginacja przyciskami (3/stronę)
     """
     if not arg or not arg.strip():
         await ctx.reply("Użycie: `!fh <FRAZA_HEBRAJSKA> [STRONA|all] [mesora]`")
@@ -879,7 +878,7 @@ async def find_hebrew(ctx, *, arg: str):
         return
 
     PER_PAGE_API = 10
-    MAX_ALL = 150  # bezpieczeństwo
+    MAX_ALL = 150
 
     try:
         if fetch_all:
@@ -909,21 +908,18 @@ async def find_hebrew(ctx, *, arg: str):
     pages_api = meta.get("pages", 1)
     cur_page_api = meta.get("page", page)
 
-    # forma do bold w HE
     hl_query = raw_query
     if not has_niqqud(raw_query):
         hinted = add_niqqud_hints_if_missing(raw_query)
         if hinted != raw_query:
             hl_query = hinted
 
-    # zbuduj bloki wyników
     async def build_block(v):
         verse_id = v["id"]
         he_text = await api_bible_get_he_text(verse_id, mesora=mesora_mode)
         ref_pl, header_pl = _pl_ref_from_usfm(verse_id)
         if not header_pl:
             header_pl = _strip_tags(v.get("reference") or verse_id)
-
         he_for_embed = he_text if mesora_mode else highlight_hebrew(he_text, hl_query)
 
         bt_txt = ""
@@ -943,17 +939,14 @@ async def find_hebrew(ctx, *, arg: str):
         if bw_txt:
             bw_txt = highlight_polish_like(bw_txt, raw_query)
 
-        lines = [f"**{header_pl}**", he_for_embed]
-        lines.append("")  # odstęp między HE a tłumaczeniami
+        lines = [f"**{header_pl}**", he_for_embed, ""]
         if bt_txt:
             lines.append(f"*BT:* {bt_txt}")
-            lines.append("")
+        if bt_txt and bw_txt:
+            lines.append("")  # odstęp tylko jeśli są oba
         if bw_txt:
             lines.append(f"*BW:* {bw_txt}")
-            lines.append("")
         return "\n".join(lines).strip()
-
-
 
     BATCH = 10
     blocks = []
@@ -962,24 +955,21 @@ async def find_hebrew(ctx, *, arg: str):
         blocks.extend(await asyncio.gather(*(build_block(v) for v in chunk)))
 
     title = f"Wyszukiwanie (HE): «{raw_query}» — WLC"
-    head = []
-    head.append(f"Znaleziono {total} wystąpień.")
+    head = [
+        f"Znaleziono {total} wystąpień.",
+        f"Strona API {cur_page_api}/{pages_api}, {PER_PAGE_API} na stronę.",
+        ""
+    ]
     if fetch_all:
-        head.append(f"Pobrano do {len(blocks)} wyników (limit bezpieczeństwa {MAX_ALL}).")
-    else:
-        head.append(f"Strona API {cur_page_api}/{pages_api}, {PER_PAGE_API} na stronę.")
-    head.append("")  # pusty wiersz
+        head = [f"Znaleziono {total} wystąpień.", f"Pobrano do {len(blocks)} wyników (limit {MAX_ALL}).", ""]
 
     footer = "Źródła: api.bible (WLC) + biblia.info.pl (BT, BW)"
     RESULTS_PER_PAGE = 3
 
-    view = FHResultsView(ctx.author.id, blocks=blocks, title=title, footer=footer, per_page=RESULTS_PER_PAGE)
-    first_embed = discord.Embed(
-        title=f"{title} — strona 1/{view.total_pages}",
-        description="\n".join(head + blocks[:RESULTS_PER_PAGE])[:4000]
-    )
-    first_embed.set_footer(text=footer)
-    await ctx.reply(embed=first_embed, view=view)
+    view = FHResultsView(ctx.author.id, blocks=blocks, title=title, footer=footer, per_page=RESULTS_PER_PAGE, head_lines=head)
+    # Używamy embed z make_embed, zapisujemy referencję do wiadomości:
+    msg = await ctx.reply(embed=view.make_embed(), view=view)
+    view.message = msg
 
 # ---------- utilities ----------
 @bot.command()
