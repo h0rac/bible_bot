@@ -664,95 +664,102 @@ async def werset(ctx, *, arg: str):
 
 @bot.command(name="fp")
 async def fraza(ctx, *, arg: str):
+    """
+    !fp <fraza> [przekład] [all]
+    Paginacja po stronie bota: pobieramy wszystkie wyniki (do limitu bezpieczeństwa),
+    składamy w bloki i paginujemy przyciskami tak jak w !fh.
+    """
     if not arg or not arg.strip():
-        await ctx.reply("Użycie: `!fp <FRAZA> [PRZEKŁAD] [STRONA|all]`")
+        await ctx.reply("Użycie: `!fp <FRAZA> [PRZEKŁAD] [all]`")
         return
 
-    PAGE_SIZE = 25
     parts = arg.strip().split()
-    page = 1
     trans = "bw"
     fetch_all = False
 
-    if parts[-1].lower() in ("all","wsz","wszystko"):
+    if parts[-1].lower() in ("all", "wsz", "wszystko"):
         fetch_all = True
         parts = parts[:-1]
 
-    if parts and parts[-1].isdigit():
-        page = max(1, int(parts[-1])); parts = parts[:-1]
-
     if parts and parts[-1].lower() in BIBLIA_INFO_CODES:
-        trans = parts[-1].lower(); parts = parts[:-1]
+        trans = parts[-1].lower()
+        parts = parts[:-1]
 
     phrase = " ".join(parts).strip()
     if not phrase:
         await ctx.reply("Podaj frazę do wyszukania, np. `!fp tak bowiem Bóg umiłował świat`")
         return
 
+    # Ustawienia paginacji „po stronie bota”
+    API_PAGE_SIZE = 25          # ile prosimy z API na krok (gdy API wspiera)
+    MAX_ALL = 600               # twardy limit bezpieczeństwa łącznej liczby rekordów
+    RESULTS_PER_PAGE = 10       # ile rekordów na stronę w embedzie
+
     hits_all = []
     meta_last = None
     search_url = None
 
     try:
-        if fetch_all:
-            cur = page
-            for _ in range(10):
-                hits, search_url, meta = await biblia_info_search_phrase_api(
-                    trans, phrase, limit=PAGE_SIZE, page=cur
-                )
-                if not hits:
-                    break
-                hits_all.extend(hits)
-                meta_last = meta
-                if meta.get("end") and meta.get("total") and meta["end"] >= meta["total"]:
-                    break
-                cur += 1
-        else:
-            hits_all, search_url, meta_last = await biblia_info_search_phrase_api(
-                trans, phrase, limit=PAGE_SIZE, page=page
+        # Pobieramy tyle stron, ile trzeba, aż do wyczerpania total albo limitu bezpieczeństwa.
+        cur = 1
+        while True:
+            hits, search_url, meta = await biblia_info_search_phrase_api(
+                trans, phrase, limit=API_PAGE_SIZE, page=cur
             )
+            if not hits:
+                break
+            hits_all.extend(hits)
+            meta_last = meta
+
+            # Koniec jeśli dobrnęliśmy do total lub do limitu bezpieczeństwa
+            if (meta.get("end") and meta.get("total") and meta["end"] >= meta["total"]) \
+               or len(hits_all) >= MAX_ALL \
+               or not fetch_all:
+                break
+            cur += 1
+
     except Exception as e:
         await ctx.reply("Brak wyników albo problem z wyszukiwarką. Spróbuj inne parametry lub za chwilę.")
-        print(f"[fraza] error: {type(e).__name__}: {e}", flush=True)
+        print(f"[fp] error: {type(e).__name__}: {e}", flush=True)
         return
 
     if not hits_all:
         await ctx.reply("Brak wyników.")
         return
 
+    total = (meta_last or {}).get("total") or len(hits_all)
+    shown = min(len(hits_all), MAX_ALL)
     trans_name = TRANSLATION_NAMES.get(trans, trans.upper())
-    total = meta_last.get("total") if meta_last else len(hits_all)
 
-    if fetch_all:
-        start, end = 1, len(hits_all)
-        title = f"Wyniki („{phrase}”) — {trans.upper()} — wszystkie ({end} z {total})"
-    else:
-        start = meta_last.get("start") or 1
-        end = meta_last.get("end") or (start + len(hits_all) - 1)
-        title = f"Wyniki („{phrase}”) — {trans.upper()} — strona {page}"
+    # Zbuduj bloki (każdy rekord jako osobny akapit)
+    blocks = [f"**{h.get('ref', '—')}** — { (h.get('snippet') or '').strip() }" for h in hits_all[:MAX_ALL]]
 
-    summary_line = (
-        f"Znaleziono {total} wystąpień frazy «{phrase}» "
-        f"w tłumaczeniu {trans_name}. Wyświetlono wyniki {start}–{end}."
+    # Nagłówek (zostanie pokazany tylko na 1. stronie)
+    head = [
+        f"Znaleziono {total} wystąpień frazy «{phrase}» w tłumaczeniu {trans_name}.",
+        f"Wyświetlam po {RESULTS_PER_PAGE} na stronę.",
+        "" if shown < total else "",
+    ]
+    if shown < total:
+        head.append(f"Pobrano do {shown} wyników (limit bezpieczeństwa {MAX_ALL}).")
+        head.append("")
+
+    title = f"Wyniki («{phrase}») — {trans.upper()}"
+    footer = "Źródło: biblia.info.pl (API search)"
+
+    # Używamy tego samego widoku co w !fh
+    view = FHResultsView(
+        ctx_author_id=ctx.author.id,
+        blocks=blocks,
+        title=title,
+        footer=footer,
+        per_page=RESULTS_PER_PAGE,
+        head_lines=head
     )
 
-    lines = [summary_line, ""]
-    for h in hits_all:
-        ref = h.get("ref", "—")
-        snip = (h.get("snippet") or "").strip()
-        lines.append(f"**{ref}** — {snip}")
-
-    footer = "Źródło: biblia.info.pl (API search)"
-    chunks = _split_for_embeds(title, footer, lines, limit=4000)
-
-    first = True
-    for ch in chunks:
-        embed = discord.Embed(title=ch["title"], description=ch["description"])
-        if first and search_url:
-            embed.url = search_url
-            first = False
-        embed.set_footer(text=ch["footer"])
-        await ctx.reply(embed=embed)
+    # Pierwsze renderowanie + zapamiętanie wiadomości (żeby nie było „duplikatu” przy edycji)
+    msg = await ctx.reply(embed=view.make_embed(), view=view)
+    view.message = msg
 
 # ---------- PAGINACJA VIEW dla !fh ----------
 class FHResultsView(discord.ui.View):
