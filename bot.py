@@ -1011,6 +1011,77 @@ async def find_hebrew(ctx, *, arg: str):
     msg = await ctx.reply(embed=view.make_embed(), view=view)
     view.message = msg
 
+# ---------- PSALMY: liczba wersetów ----------
+PSALM_VERSES = {
+    1:6, 2:12, 3:9, 4:9, 5:13, 6:11, 7:18, 8:10, 9:21, 10:18,
+    11:7, 12:9, 13:6, 14:7, 15:5, 16:11, 17:15, 18:51, 19:15, 20:10,
+    21:14, 22:32, 23:6, 24:10, 25:22, 26:12, 27:14, 28:9, 29:11, 30:13,
+    31:25, 32:11, 33:22, 34:23, 35:28, 36:13, 37:40, 38:23, 39:14, 40:18,
+    41:14, 42:12, 43:5, 44:27, 45:18, 46:12, 47:10, 48:15, 49:21, 50:23,
+    51:21, 52:11, 53:7, 54:9, 55:24, 56:14, 57:12, 58:12, 59:18, 60:14,
+    61:9, 62:13, 63:12, 64:11, 65:14, 66:20, 67:8, 68:36, 69:37, 70:6,
+    71:24, 72:20, 73:28, 74:23, 75:11, 76:13, 77:21, 78:72, 79:13, 80:20,
+    81:17, 82:8, 83:19, 84:13, 85:14, 86:17, 87:7, 88:19, 89:53, 90:17,
+    91:16, 92:16, 93:5, 94:23, 95:11, 96:13, 97:12, 98:9, 99:9, 100:5,
+    101:8, 102:29, 103:22, 104:35, 105:45, 106:48, 107:43, 108:14, 109:31, 110:7,
+    111:10, 112:10, 113:9, 114:8, 115:18, 116:19, 117:2, 118:29, 119:176, 120:7,
+    121:8, 122:9, 123:4, 124:8, 125:5, 126:6, 127:5, 128:6, 129:8, 130:8,
+    131:3, 132:18, 133:3, 134:3, 135:21, 136:26, 137:9, 138:8, 139:24, 140:14,
+    141:10, 142:8, 143:12, 144:15, 145:21, 146:10, 147:20, 148:14, 149:9, 150:6
+}
+
+# ---------- KOMENDA: !psalm (jak !w, ale tylko Psalmy; losuje gdy bez argumentów) ----------
+@bot.command(name="psalm")
+async def psalm_cmd(ctx, *, arg: str | None = None):
+    """
+    Użycie:
+      !psalm                  -> losowy Psalm (BW)
+      !psalm 23               -> cały Ps 23 (BW)
+      !psalm 23 ubg           -> cały Ps 23 (UBG)
+      !psalm 23:1-9           -> Ps 23:1-9 (BW)
+      !psalm 23 1-9 bt        -> Ps 23:1-9 (BT)
+    """
+    trans = "bw"
+    num = None
+    vrange = None
+
+    if arg and arg.strip():
+        parts = arg.strip().split()
+
+        # Ostatni token = kod przekładu?
+        if parts and parts[-1].lower() in BIBLIA_INFO_CODES:
+            trans = parts[-1].lower()
+            parts = parts[:-1]
+
+        # Złap formy: "23", "23:1-9", "23 1-9"
+        rest = " ".join(parts)
+        m = re.match(r"^\s*(\d{1,3})(?::\s*([\d\-]+))?\s*$", rest)
+        if not m and parts:
+            # spróbuj wariantu "23 1-9"
+            m = re.match(r"^\s*(\d{1,3})\s+([\d\-]+)\s*$", rest)
+        if m:
+            num = int(m.group(1))
+            vrange = m.group(2) if m.lastindex and m.group(2) else None
+
+    # Losowo, jeśli nie podano numeru
+    if num is None:
+        num = random.randint(1, 150)
+
+    # Jeśli nie podano zakresu, bierz cały psalm (korzystamy z PSALM_VERSES jeśli masz; inaczej 1-200)
+    end = PSALM_VERSES.get(num, 200) if 'PSALM_VERSES' in globals() else 200
+    ref = f"Ps {num}:{vrange if vrange else f'1-{end}'}"
+
+    try:
+        txt = await biblia_info_get_passage(trans, ref)
+        if not txt:
+            raise RuntimeError("Pusty wynik.")
+        embed = discord.Embed(title=f"{ref} — {trans.upper()}", description=txt[:4000])
+        embed.set_footer(text="Źródło: biblia.info.pl")
+        await ctx.reply(embed=embed)
+    except Exception as e:
+        await ctx.reply(f"❌ Nie udało się pobrać {ref} ({trans.upper()}): {e}")
+
+
 # ---------- utilities ----------
 @bot.command()
 async def ping(ctx):
