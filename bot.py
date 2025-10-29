@@ -978,6 +978,52 @@ async def find_hebrew(ctx, *, arg: str):
     msg = await ctx.reply(embed=view.make_embed(), view=view)
     view.message = msg
 
+# ---------- KOMENDA: !psalm (losowy lub wskazany Psalm w PL) ----------
+@bot.command(name="psalm")
+async def psalm_cmd(ctx, *, arg: str | None = None):
+    """
+    !psalm            -> losowy psalm (BW)
+    !psalm 23         -> Psalm 23 (BW)
+    !psalm 23 bt      -> Psalm 23 w BT
+    !psalm bt         -> losowy psalm w BT
+    """
+    trans = "bw"
+    num: int | None = None
+
+    if arg and arg.strip():
+        parts = arg.strip().split()
+
+        # Jeśli ostatni token to kod przekładu – użyj go
+        if parts and parts[-1].lower() in BIBLIA_INFO_CODES:
+            trans = parts[-1].lower()
+            parts = parts[:-1]
+
+        # Jeśli pozostał numer – spróbuj zparsować
+        if parts:
+            try:
+                cand = int(parts[0])
+                if 1 <= cand <= 150:
+                    num = cand
+            except Exception:
+                pass
+
+    # Losowanie jeśli nie podano numeru
+    if num is None:
+        num = random.randint(1, 150)
+
+    # Bierzemy cały rozdział (1-999 zazwyczaj zwraca wszystkie wersety rozdziału)
+    ref = f"Ps {num}:1-999"
+    try:
+        txt = await biblia_info_get_passage(trans, ref)
+        trans_name = TRANSLATION_NAMES.get(trans, trans.upper())
+        title = f"Psalm {num} — {trans_name}"
+        embed = discord.Embed(title=title, description=(txt or "")[:4000])
+        embed.set_footer(text="Źródło: biblia.info.pl")
+        await ctx.reply(embed=embed)
+    except Exception as e:
+        await ctx.reply(f"❌ Nie udało się pobrać Psalmu {num} ({trans.upper()}): {e}")
+
+
 # ---------- utilities ----------
 @bot.command()
 async def ping(ctx):
@@ -1024,4 +1070,3 @@ if not TOKEN:
 if not API_BIBLE_TOKEN:
     raise SystemExit("Brak API_BIBLE_TOKEN w środowisku (api.bible)")
 bot.run(TOKEN)
-
