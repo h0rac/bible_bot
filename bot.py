@@ -761,6 +761,35 @@ async def fraza(ctx, *, arg: str):
     msg = await ctx.reply(embed=view.make_embed(), view=view)
     view.message = msg
 
+# ---------- biblia.info.pl – cały rozdział partiami ----------
+async def biblia_info_get_chapter_full(trans: str, book_pl: str, ch: int, max_step: int = 60, hard_cap: int = 400) -> str:
+    """
+    Pobiera cały rozdział (np. Psalm) w kawałkach, unikając błędu 400 dla zakresów typu 1-999.
+    - max_step: ile wersetów w jednym zapytaniu (bezpiecznie 50–80).
+    - hard_cap: bezpiecznik (maks. liczba wersetów do zebrania).
+    """
+    parts: list[str] = []
+    start = 1
+    while start <= hard_cap:
+        end = min(start + max_step - 1, hard_cap)
+        ref = f"{book_pl} {ch}:{start}-{end}"
+        try:
+            chunk = await biblia_info_get_passage(trans, ref)
+        except Exception:
+            break  # dalsze próby najpewniej też zwrócą błąd — kończymy
+        chunk_clean = (chunk or "").strip()
+        if not chunk_clean:
+            break
+        parts.append(chunk_clean)
+        # heurystyka: jeśli liczba wierszy < ~połowy zakresu, to możliwe że to już końcówka rozdziału
+        line_count = len([ln for ln in chunk_clean.splitlines() if ln.strip()])
+        if line_count < int(0.5 * (end - start + 1)):
+            break
+        start = end + 1
+    return _compact_blank_lines("\n".join(parts))
+
+
+
 # ---------- PAGINACJA VIEW dla !fh ----------
 class FHResultsView(discord.ui.View):
     def __init__(self, ctx_author_id: int, blocks: list[str], title: str, footer: str, per_page: int = 3, head_lines: list[str] | None = None):
