@@ -67,8 +67,9 @@ TRANSLATION_NAMES = {
     "nb":  "Uwspółcześniona Biblia Gdańska",
 }
 
-# ---- USFM → polskie skróty (nagłówek) ----
+# ---- USFM → polskie skróty (ST + NT) ----
 USFM_TO_PL = {
+    # ST
     "GEN": "Rdz","EXO": "Wj","LEV": "Kpł","NUM": "Lb","DEU": "Pwt",
     "JOS": "Joz","JDG": "Sdz","RUT": "Rut",
     "1SA":"1Sm","2SA":"2Sm","1KI":"1Krl","2KI":"2Krl",
@@ -78,6 +79,17 @@ USFM_TO_PL = {
     "HOS":"Oz","JOL":"Jl","AMO":"Am","OBA":"Ab","JON":"Jon",
     "MIC":"Mi","NAM":"Na","HAB":"Ha","ZEP":"So","HAG":"Ag","ZEC":"Za","MAL":"Ml",
 }
+# NT (uzupełnienie)
+USFM_TO_PL.update({
+    "MAT": "Mt","MRK": "Mk","LUK": "Łk","JHN": "J",
+    "ACT": "Dz",
+    "ROM": "Rz","1CO": "1Kor","2CO": "2Kor","GAL": "Gal","EPH": "Ef",
+    "PHP": "Flp","COL": "Kol","1TH": "1Tes","2TH": "2Tes",
+    "1TI": "1Tm","2TI": "2Tm","TIT": "Tt","PHM": "Flm",
+    "HEB": "Hbr","JAS": "Jk","1PE": "1P","2PE": "2P",
+    "1JN": "1J","2JN": "2J","3JN": "3J","JUD": "Jud",
+    "REV": "Ap",
+})
 
 # ---------- cache ----------
 _cache: dict[str, dict] = {}
@@ -260,7 +272,11 @@ async def http_get_text(url: str, timeout: int = 20):
     return 403, "<blocked>"
 
 # ---------- biblia.info.pl – pojedynczy werset (PL) ----------
-REF_RE = re.compile(r"^\s*([^\d]+)\s+(\d+):(\d+(?:-\d+)?)\s*$", re.IGNORECASE)
+# ✅ Poprawiony regex – obsługuje: 1Kor, 2 Tm, 3J, Ew. Jana, Mt 5:3 itd.
+REF_RE = re.compile(
+    r"^\s*([1-3]?\s*[A-Za-zżźćńółęąśŻŹĆĄŚĘŁÓŃ.\- ]+?)\s+(\d+)\s*:\s*(\d+(?:-\d+)?)\s*$",
+    re.IGNORECASE
+)
 
 def parse_ref(ref: str):
     m = REF_RE.match(ref)
@@ -269,10 +285,46 @@ def parse_ref(ref: str):
     book_pl, ch, vs = m.groups()
     return book_pl.strip(), ch, vs
 
-DIV_VERSE_RE = re.compile(r'(?is)<div[^>]*class="verse-text"[^>]*>(.*?)</div>')
-SPAN_NUM_RE = re.compile(r'(?is)<span[^>]*class="verse-number"[^>]*>(\d+)</span>')
+def _strip_pl_diacritics(s: str) -> str:
+    return (s or "").translate(str.maketrans("ąćęłńóśżź", "acelnoszz"))
+
+def _slug_candidates(book_pl: str) -> list[str]:
+    """
+    Buduje listę sensownych wariantów sluga dla biblia.info.pl:
+    - lower, usunięte ogonki,
+    - warianty: ze spacją, bez spacji, z myślnikiem,
+    - usuwa kropki, redukuje wielokrotne spacje,
+    - zdejmuje prefiksy 'Ew.', 'Ew ', 'List do '.
+    """
+    base = (book_pl or "").strip().lower()
+    base_nodiac = _strip_pl_diacritics(base)
+
+    # usuń kropki i zredukuj spacje
+    base_clean = re.sub(r"[.]+", "", base_nodiac)
+    base_clean = re.sub(r"\s+", " ", base_clean).strip()
+
+    variants = set()
+    # bazowe
+    variants.add(base_clean)
+    variants.add(base_clean.replace(" ", ""))
+    variants.add(base_clean.replace(" ", "-"))
+
+    # uproszczenia popularnych nazw
+    simplified = base_clean.replace("list do ", "").replace("ew ", "").replace("ew.", "").strip()
+    variants.add(simplified)
+    variants.add(simplified.replace(" ", ""))
+    variants.add(simplified.replace(" ", "-"))
+
+    # Psalmy – dodatkowe pewniaki
+    if simplified.startswith("ps"):
+        variants.update(["ps", "psalm", "psalmy"])
+
+    # deduplikacja z zachowaniem kolejności
+    return list(dict.fromkeys(v for v in variants if v))
 
 def biblia_html_to_text(full_html: str) -> str:
+    DIV_VERSE_RE = re.compile(r'(?is)<div[^>]*class="verse-text"[^>]*>(.*?)</div>')
+    SPAN_NUM_RE = re.compile(r'(?is)<span[^>]*class="verse-number"[^>]*>(\d+)</span>')
     blocks = DIV_VERSE_RE.findall(full_html)
     lines = []
     if blocks:
@@ -288,13 +340,8 @@ def biblia_html_to_text(full_html: str) -> str:
     return _strip_tags(full_html)
 
 def clean_pl_verse_text(t: str) -> str:
-    """
-    Czyści z nadmiarowych nagłówków/mety (Księga..., (6), 46:2, 3,4, lata 1998–2023, IB2000, ©, autor).
-    Zostawia sam tekst wersetu.
-    """
     t = (t or "").replace("\xa0", " ")
     lines = [ln.strip() for ln in t.splitlines()]
-
     DROP_PATTERNS = [
         r"^Księga\s+\w+.*$",
         r"^\(?\d+\)?[.,]?$",
@@ -308,7 +355,6 @@ def clean_pl_verse_text(t: str) -> str:
         r"^[,.;·]+$"
     ]
     drops = [re.compile(p, re.IGNORECASE) for p in DROP_PATTERNS]
-
     kept = []
     for ln in lines:
         if not ln:
@@ -316,9 +362,8 @@ def clean_pl_verse_text(t: str) -> str:
         if any(p.match(ln) for p in drops):
             continue
         kept.append(ln)
-
     out = "\n".join(kept)
-    out = re.sub(r"(?m)^\s*\d+[.)]\s*", "", out)  # wiodący "6. "
+    out = re.sub(r"(?m)^\s*\d+[.)]\s*", "", out)
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
     return out
 
@@ -327,22 +372,20 @@ async def biblia_info_get_passage(trans: str, ref: str) -> str:
         raise ValueError(f"Nieznany przekład: {trans}")
     parsed = parse_ref(ref)
     if not parsed:
-        raise ValueError("Nieprawidłowa referencja (np. 'Rdz 1:1').")
+        raise ValueError("Nieprawidłowa referencja (np. 'Rdz 1:1' lub '1 Kor 13:4').")
     book_pl, ch, vs = parsed
     cache_key = f"biblia_info|{trans}|{book_pl}|{ch}|{vs}"
     cached = cache_get(cache_key)
     if cached:
         return cached
-    slug_try = [
-        book_pl.lower().replace("ł", "l").replace("ś", "s").replace("ż", "z").replace("ź","z"),
-        book_pl.lower()
-    ]
+
     last_status, last_snippet = None, ""
-    for slug in slug_try:
-        url = f"{BIBLIA_INFO_BASE}/werset/{BIBLIA_INFO_CODES[trans]}/{slug}/{ch}/{vs}"
+    for slug in _slug_candidates(book_pl):
+        slug_enc = quote(slug, safe="")
+        url = f"{BIBLIA_INFO_BASE}/werset/{BIBLIA_INFO_CODES[trans]}/{slug_enc}/{ch}/{vs}"
         status, html = await http_get_text(url)
         last_status, last_snippet = status, (html or "")[:120].replace("\n", " ")
-        if status == 200 and html.strip():
+        if status == 200 and (html or "").strip():
             text = biblia_html_to_text(html)
             if text:
                 text = clean_pl_verse_text(text)
@@ -651,7 +694,7 @@ async def biblia_info_search_phrase_api(trans: str, phrase: str, limit: int = 5,
 async def werset(ctx, *, arg: str):
     parts = arg.rsplit(" ", 1)
     if len(parts) != 2:
-        await ctx.reply("Użycie: `!w <KSIĘGA> <ROZDZIAŁ:WERS[-WERS]> <PRZEKŁAD>`\nnp. `!w J 3:16 bw`")
+        await ctx.reply("Użycie: `!w <KSIĘGA> <ROZDZIAŁ:WERS[-WERS]> <PRZEKŁAD>`\nnp. `!w 1 Kor 13:4 bw`")
     else:
         ref, trans = parts[0].strip(), parts[1].strip().lower()
         try:
@@ -700,7 +743,6 @@ async def fraza(ctx, *, arg: str):
     search_url = None
 
     try:
-        # Pobieramy tyle stron, ile trzeba, aż do wyczerpania total albo limitu bezpieczeństwa.
         cur = 1
         while True:
             hits, search_url, meta = await biblia_info_search_phrase_api(
@@ -710,8 +752,6 @@ async def fraza(ctx, *, arg: str):
                 break
             hits_all.extend(hits)
             meta_last = meta
-
-            # Koniec jeśli dobrnęliśmy do total lub do limitu bezpieczeństwa
             if (meta.get("end") and meta.get("total") and meta["end"] >= meta["total"]) \
                or len(hits_all) >= MAX_ALL \
                or not fetch_all:
@@ -731,10 +771,8 @@ async def fraza(ctx, *, arg: str):
     shown = min(len(hits_all), MAX_ALL)
     trans_name = TRANSLATION_NAMES.get(trans, trans.upper())
 
-    # Zbuduj bloki (każdy rekord jako osobny akapit)
     blocks = [f"**{h.get('ref', '—')}** — { (h.get('snippet') or '').strip() }" for h in hits_all[:MAX_ALL]]
 
-    # Nagłówek (zostanie pokazany tylko na 1. stronie)
     head = [
         f"Znaleziono {total} wystąpień frazy «{phrase}» w tłumaczeniu {trans_name}.",
         f"Wyświetlam po {RESULTS_PER_PAGE} na stronę.",
@@ -747,7 +785,6 @@ async def fraza(ctx, *, arg: str):
     title = f"Wyniki («{phrase}») — {trans.upper()}"
     footer = "Źródło: biblia.info.pl (API search)"
 
-    # Używamy tego samego widoku co w !fh
     view = FHResultsView(
         ctx_author_id=ctx.author.id,
         blocks=blocks,
@@ -757,38 +794,8 @@ async def fraza(ctx, *, arg: str):
         head_lines=head
     )
 
-    # Pierwsze renderowanie + zapamiętanie wiadomości (żeby nie było „duplikatu” przy edycji)
     msg = await ctx.reply(embed=view.make_embed(), view=view)
     view.message = msg
-
-# ---------- biblia.info.pl – cały rozdział partiami ----------
-async def biblia_info_get_chapter_full(trans: str, book_pl: str, ch: int, max_step: int = 60, hard_cap: int = 400) -> str:
-    """
-    Pobiera cały rozdział (np. Psalm) w kawałkach, unikając błędu 400 dla zakresów typu 1-999.
-    - max_step: ile wersetów w jednym zapytaniu (bezpiecznie 50–80).
-    - hard_cap: bezpiecznik (maks. liczba wersetów do zebrania).
-    """
-    parts: list[str] = []
-    start = 1
-    while start <= hard_cap:
-        end = min(start + max_step - 1, hard_cap)
-        ref = f"{book_pl} {ch}:{start}-{end}"
-        try:
-            chunk = await biblia_info_get_passage(trans, ref)
-        except Exception:
-            break  # dalsze próby najpewniej też zwrócą błąd — kończymy
-        chunk_clean = (chunk or "").strip()
-        if not chunk_clean:
-            break
-        parts.append(chunk_clean)
-        # heurystyka: jeśli liczba wierszy < ~połowy zakresu, to możliwe że to już końcówka rozdziału
-        line_count = len([ln for ln in chunk_clean.splitlines() if ln.strip()])
-        if line_count < int(0.5 * (end - start + 1)):
-            break
-        start = end + 1
-    return _compact_blank_lines("\n".join(parts))
-
-
 
 # ---------- PAGINACJA VIEW dla !fh ----------
 class FHResultsView(discord.ui.View):
@@ -801,8 +808,7 @@ class FHResultsView(discord.ui.View):
         self.footer = footer
         self.title = title
         self.head_lines = head_lines or []
-        self.message: discord.Message | None = None  # <- tu będzie przypis
-        # publiczne klikanie + cooldown
+        self.message: discord.Message | None = None
         self.locked_to_author = os.getenv("FH_LOCKED_TO_AUTHOR", "0") in ("1", "true", "yes")
         self.cooldown = 1.5
         self._last_click_per_user: dict[int, float] = {}
@@ -841,7 +847,6 @@ class FHResultsView(discord.ui.View):
         return True
 
     async def on_timeout(self):
-        # wyszarz przyciski, zedytuj wiadomość
         for child in self.children:
             child.disabled = True
         try:
@@ -882,7 +887,7 @@ async def find_hebrew(ctx, *, arg: str):
     """
     !fh <hebrajski> [strona|all] [mesora]
     - Rdz 1:6 → HE (bold) → (pusta linia) → BT → (pusta) → BW
-    - PL czyszczone z nagłówków/linii lat/copyright
+    - PL czyszczone z nagłówków/note/©
     - paginacja przyciskami (3/stronę)
     """
     if not arg or not arg.strip():
@@ -979,7 +984,7 @@ async def find_hebrew(ctx, *, arg: str):
         if bt_txt:
             lines.append(f"*BT:* {bt_txt}")
         if bt_txt and bw_txt:
-            lines.append("")  # odstęp tylko jeśli są oba
+            lines.append("")
         if bw_txt:
             lines.append(f"*BW:* {bw_txt}")
         return "\n".join(lines).strip()
@@ -1003,80 +1008,8 @@ async def find_hebrew(ctx, *, arg: str):
     RESULTS_PER_PAGE = 3
 
     view = FHResultsView(ctx.author.id, blocks=blocks, title=title, footer=footer, per_page=RESULTS_PER_PAGE, head_lines=head)
-    # Używamy embed z make_embed, zapisujemy referencję do wiadomości:
     msg = await ctx.reply(embed=view.make_embed(), view=view)
     view.message = msg
-
-
-# ---------- PSALMY: liczba wersetów ----------
-PSALM_VERSES = {
-    1:6, 2:12, 3:9, 4:9, 5:13, 6:11, 7:18, 8:10, 9:21, 10:18,
-    11:7, 12:9, 13:6, 14:7, 15:5, 16:11, 17:15, 18:51, 19:15, 20:10,
-    21:14, 22:32, 23:6, 24:10, 25:22, 26:12, 27:14, 28:9, 29:11, 30:13,
-    31:25, 32:11, 33:22, 34:23, 35:28, 36:13, 37:40, 38:23, 39:14, 40:18,
-    41:14, 42:12, 43:5, 44:27, 45:18, 46:12, 47:10, 48:15, 49:21, 50:23,
-    51:21, 52:11, 53:7, 54:9, 55:24, 56:14, 57:12, 58:12, 59:18, 60:14,
-    61:9, 62:13, 63:12, 64:11, 65:14, 66:20, 67:8, 68:36, 69:37, 70:6,
-    71:24, 72:20, 73:28, 74:23, 75:11, 76:13, 77:21, 78:72, 79:13, 80:20,
-    81:17, 82:8, 83:19, 84:13, 85:14, 86:17, 87:7, 88:19, 89:53, 90:17,
-    91:16, 92:16, 93:5, 94:23, 95:11, 96:13, 97:12, 98:9, 99:9, 100:5,
-    101:8, 102:29, 103:22, 104:35, 105:45, 106:48, 107:43, 108:14, 109:31, 110:7,
-    111:10, 112:10, 113:9, 114:8, 115:18, 116:19, 117:2, 118:29, 119:176, 120:7,
-    121:8, 122:9, 123:4, 124:8, 125:5, 126:6, 127:5, 128:6, 129:8, 130:8,
-    131:3, 132:18, 133:3, 134:3, 135:21, 136:26, 137:9, 138:8, 139:24, 140:14,
-    141:10, 142:8, 143:12, 144:15, 145:21, 146:10, 147:20, 148:14, 149:9, 150:6
-}
-
-# ---------- KOMENDA: !psalm (jak !w, ale tylko Psalmy; losuje gdy bez argumentów) ----------
-@bot.command(name="psalm")
-async def psalm_cmd(ctx, *, arg: str | None = None):
-    """
-    Użycie:
-      !psalm                  -> losowy Psalm (BW)
-      !psalm 23               -> cały Ps 23 (BW)
-      !psalm 23 ubg           -> cały Ps 23 (UBG)
-      !psalm 23:1-9           -> Ps 23:1-9 (BW)
-      !psalm 23 1-9 bt        -> Ps 23:1-9 (BT)
-    """
-    trans = "bw"
-    num = None
-    vrange = None
-
-    if arg and arg.strip():
-        parts = arg.strip().split()
-
-        # Ostatni token = kod przekładu?
-        if parts and parts[-1].lower() in BIBLIA_INFO_CODES:
-            trans = parts[-1].lower()
-            parts = parts[:-1]
-
-        # Złap formy: "23", "23:1-9", "23 1-9"
-        rest = " ".join(parts)
-        m = re.match(r"^\s*(\d{1,3})(?::\s*([\d\-]+))?\s*$", rest)
-        if not m and parts:
-            # spróbuj wariantu "23 1-9"
-            m = re.match(r"^\s*(\d{1,3})\s+([\d\-]+)\s*$", rest)
-        if m:
-            num = int(m.group(1))
-            vrange = m.group(2) if m.lastindex and m.group(2) else None
-
-    # Losowo, jeśli nie podano numeru
-    if num is None:
-        num = random.randint(1, 150)
-
-    # Jeśli nie podano zakresu, bierz cały psalm (korzystamy z PSALM_VERSES jeśli masz; inaczej 1-200)
-    end = PSALM_VERSES.get(num, 200) if 'PSALM_VERSES' in globals() else 200
-    ref = f"Ps {num}:{vrange if vrange else f'1-{end}'}"
-
-    try:
-        txt = await biblia_info_get_passage(trans, ref)
-        if not txt:
-            raise RuntimeError("Pusty wynik.")
-        embed = discord.Embed(title=f"{ref} — {trans.upper()}", description=txt[:4000])
-        embed.set_footer(text="Źródło: biblia.info.pl")
-        await ctx.reply(embed=embed)
-    except Exception as e:
-        await ctx.reply(f"❌ Nie udało się pobrać {ref} ({trans.upper()}): {e}")
 
 # ---------- utilities ----------
 @bot.command()
@@ -1124,3 +1057,4 @@ if not TOKEN:
 if not API_BIBLE_TOKEN:
     raise SystemExit("Brak API_BIBLE_TOKEN w środowisku (api.bible)")
 bot.run(TOKEN)
+
