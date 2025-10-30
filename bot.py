@@ -1140,8 +1140,8 @@ async def pascha(ctx, arg: str | None = None):
             f"🌑 **Pierwszy nów po równonocy:** {new_moon.strftime('%d %B %Y')} "
             f"(widoczny wieczorem następnego dnia)\n\n"
             f"🕊️ **14 Nisan (Pascha):** {pascha_date.strftime('%d %B %Y')}\n"
-            f"🍞 **15 Nisan (Przaśniki):** {przasniki.strftime('%d %B %Y')}\n"
-            f"🌾 **16 Nisan (Pierwociny):** {pierwociny.strftime('%d %B %Y')}"
+            #f"🍞 **15 Nisan (Przaśniki):** {przasniki.strftime('%d %B %Y')}\n"
+            #f"🌾 **16 Nisan (Pierwociny):** {pierwociny.strftime('%d %B %Y')}"
         ),
         color=0xFFD700
     )
