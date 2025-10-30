@@ -1088,27 +1088,45 @@ async def psalm_cmd(ctx, *, arg: str | None = None):
 @bot.command(name="pascha")
 async def pascha(ctx, arg: str | None = None):
     """
-    Oblicza biblijną datę Paschy (14 Nisan) wg astronomicznych nowiów i równonocy.
+    Oblicza biblijną Paschę (14 Nisan) tak, jak chcesz:
+    1) bierzemy równonoc = 20 marca danego roku
+    2) bierzemy PIERWSZY nów PO tej dacie
+    3) 14 Nisan = nów + 13 dni
     Użycie:
-      !pascha        → bieżący rok
-      !pascha 2025   → konkretny rok
-      !pascha all    → tabela 2020–2030
+      !pascha          → bieżący rok
+      !pascha 2027     → konkretny rok
+      !pascha all      → lista np. 2024–2030
     """
-    def oblicz_pasche(rok: int):
-        eq = ephem.localtime(ephem.next_equinox(f"{rok}/1/1"))
-        new_moon = ephem.localtime(ephem.next_new_moon(eq))
-        pascha_date = new_moon + datetime.timedelta(days=13)
-        return pascha_date
 
-    # tryb: zestawienie wszystkich lat
+    def oblicz_pasche_dla_roku(rok: int) -> tuple[datetime.date, datetime.date, datetime.date]:
+        # 1. równonoc — przyjmujemy zawsze 20 marca danego roku (twoja zasada)
+        rownonoc = datetime.datetime(rok, 3, 20, 12, 0, 0)  # godzina tu nie ma aż takiego znaczenia
+
+        # 2. pierwszy nów PO równonocy
+        # ephem potrzebuje stringa lub datetime
+        # bierzemy next_new_moon OD 20 marca → to da pierwszy po równonocy, nie wcześniejszy
+        pierwszy_now = ephem.next_new_moon(rownonoc)
+        pierwszy_now = ephem.localtime(pierwszy_now)
+
+        # 3. 14 Nisan = nów + 13 dni
+        pascha_dt = pierwszy_now + datetime.timedelta(days=13)
+
+        return rownonoc, pierwszy_now, pascha_dt
+
+    # --- tryb lista ---
     if arg and arg.lower() == "all":
-        lines = []
-        for rok in range(2020, 2031):
-            pascha_date = oblicz_pasche(rok)
-            lines.append(f"**{rok}** — 🌕 {pascha_date.strftime('%d %b %Y')}")
+        start = 2024
+        end = 2030
+        lines: list[str] = []
+        for rok in range(start, end + 1):
+            _, now_dt, pascha_dt = oblicz_pasche_dla_roku(rok)
+            lines.append(
+                f"**{rok}** — nów: {now_dt.strftime('%d %b %Y')} → Pascha 🌕 {pascha_dt.strftime('%d %b %Y')}"
+            )
 
-        chunks = []
+        # ewentualny podział na kilka embedów, gdyby było za długo
         buf = ""
+        chunks: list[str] = []
         for ln in lines:
             add = ln + "\n"
             if len(buf) + len(add) > 3800:
@@ -1119,55 +1137,36 @@ async def pascha(ctx, arg: str | None = None):
         if buf:
             chunks.append(buf)
 
-        for i, chunk in enumerate(chunks):
+        for i, chunk in enumerate(chunks, 1):
             embed = discord.Embed(
-                title=f"📅 Biblijna Pascha — lata 2020 – 2030 ({i+1}/{len(chunks)})",
+                title=f"📅 Biblijna Pascha — {start}–{end} (część {i}/{len(chunks)})",
                 description=chunk,
                 color=0xFFD700,
             )
-            embed.set_footer(text="Obliczenia wg astronomicznych nowiów i równonocy (Rdz 1:14)")
+            embed.set_footer(text="Zasada: pierwszy nów po 20 marca + 13 dni = 14 Nisan")
             await ctx.reply(embed=embed)
         return
 
-    # pojedynczy rok
-    rok = datetime.datetime.utcnow().year if not arg else int(arg)
-    eq = ephem.localtime(ephem.next_equinox(f"{rok}/1/1"))
-    new_moon = ephem.localtime(ephem.next_new_moon(eq))
-    pascha_date = new_moon + datetime.timedelta(days=13)
+    # --- tryb pojedynczy rok ---
+    if arg and arg.isdigit():
+        rok = int(arg)
+    else:
+        rok = datetime.datetime.utcnow().year
+
+    rownonoc, now_dt, pascha_dt = oblicz_pasche_dla_roku(rok)
 
     embed = discord.Embed(
-        title=f"📆 Biblijna Pascha — rok {rok}",
+        title=f"📆 Biblijna Pascha — {rok}",
         description=(
-            f"🌄 **Równonoc wiosenna:** {eq.strftime('%d %B %Y')}\n\n"
-            f"🌑 **Pierwszy nów po równonocy:** {new_moon.strftime('%d %B %Y')}\n\n"
-            f"(widoczny wieczorem następnego dnia)\n\n"
-            f"🌕 **14 Nisan (Pascha):** {pascha_date.strftime('%d %B %Y')}"
+            f"🌸 **Równonoc przyjęta:** 20 marca {rok}\n"
+            f"🌑 **Pierwszy nów po równonocy:** {now_dt.strftime('%d %B %Y')} "
+            f"(astron.)\n\n"
+            f"🌕 **14 Nisan (Pascha):** {pascha_dt.strftime('%d %B %Y')}"
         ),
         color=0xFFD700,
     )
-    embed.set_footer(text="Obliczenia wg astronomicznych nowiów i równonocy (Rdz 1:14)")
+    embed.set_footer(text="Obliczanie wg: pierwszy nów po 20 marca → +13 dni")
     await ctx.reply(embed=embed)
-
-@bot.command()
-async def ping(ctx):
-    await ctx.reply("pong")
-
-@bot.command()
-async def diag(ctx):
-    me = ctx.guild.me
-    perms = ctx.channel.permissions_for(me)
-    report = (
-        f"view_channel={perms.view_channel}\n"
-        f"send_messages={perms.send_messages}\n"
-        f"embed_links={perms.embed_links}\n"
-        f"read_message_history={perms.read_message_history}"
-    )
-    await ctx.reply(f"```{report}```")
-
-@bot.command(name="komendy")
-async def komendy(ctx):
-    names = [c.name for c in bot.commands]
-    await ctx.reply(", ".join(sorted(names)))
 
 # ---------- eventy ----------
 @bot.event
