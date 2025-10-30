@@ -7,7 +7,8 @@ import aiohttp
 import asyncio
 import random
 from urllib.parse import quote_plus, quote
-
+import ephem
+import datetime
 import discord
 from discord.ext import commands
 
@@ -1083,6 +1084,71 @@ async def psalm_cmd(ctx, *, arg: str | None = None):
 
 
 # ---------- utilities ----------
+
+
+
+@bot.command(name="pascha")
+async def pascha(ctx, arg: str | None = None):
+    """
+    Oblicza biblijną datę Paschy (14 Nisan) wg astronomicznych nowiów i równonocy.
+    - !pascha → bieżący rok
+    - !pascha 2025 → konkretny rok
+    - !pascha all → zestawienie 2020–2030
+    """
+    def oblicz_pasche(rok: int):
+        # równonoc wiosenna
+        eq = ephem.localtime(ephem.next_equinox(f"{rok}/1/1"))
+        # pierwszy nów po równonocy
+        new_moon = ephem.localtime(ephem.next_new_moon(eq))
+        # 14 Nisan = 13 dni po nowiu
+        pascha_date = new_moon + datetime.timedelta(days=13)
+        przasniki = pascha_date + datetime.timedelta(days=1)
+        pierwociny = pascha_date + datetime.timedelta(days=2)
+        return eq, new_moon, pascha_date, przasniki, pierwociny
+
+    # tryb: zestawienie 2020–2030
+    if arg and arg.lower() == "all":
+        desc = []
+        for rok in range(2020, 2031):
+            _, _, pascha, przasniki, pierwociny = oblicz_pasche(rok)
+            desc.append(
+                f"**{rok}** — Pascha 🌕 {pascha.strftime('%d %b')}, "
+                f"Przaśniki 🍞 {przasniki.strftime('%d %b')}, "
+                f"Pierwociny 🌾 {pierwociny.strftime('%d %b')}"
+            )
+        embed = discord.Embed(
+            title="📆 Biblijna Pascha — lata 2020 – 2030",
+            description="\n".join(desc),
+            color=0xFFD700
+        )
+        embed.set_footer(text="Obliczenia wg astronomicznych nowiów i równonocy (Rdz 1:14)")
+        await ctx.reply(embed=embed)
+        return
+
+    # pojedynczy rok
+    if arg and arg.isdigit():
+        rok = int(arg)
+    else:
+        rok = datetime.datetime.utcnow().year
+
+    eq, new_moon, pascha_date, przasniki, pierwociny = oblicz_pasche(rok)
+
+    embed = discord.Embed(
+        title=f"📅 Biblijna Pascha — rok {rok}",
+        description=(
+            f"🌄 **Równonoc wiosenna:** {eq.strftime('%d %B %Y')}\n"
+            f"🌑 **Pierwszy nów po równonocy:** {new_moon.strftime('%d %B %Y')} "
+            f"(widoczny wieczorem następnego dnia)\n\n"
+            f"🕊️ **14 Nisan (Pascha):** {pascha_date.strftime('%d %B %Y')}\n"
+            f"🍞 **15 Nisan (Przaśniki):** {przasniki.strftime('%d %B %Y')}\n"
+            f"🌾 **16 Nisan (Pierwociny):** {pierwociny.strftime('%d %B %Y')}"
+        ),
+        color=0xFFD700
+    )
+    embed.set_footer(text="Obliczenia wg astronomicznych nowiów i równonocy (Rdz 1:14)")
+    await ctx.reply(embed=embed)
+
+
 @bot.command()
 async def ping(ctx):
     await ctx.reply("pong")
