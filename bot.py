@@ -1086,38 +1086,32 @@ async def psalm_cmd(ctx, *, arg: str | None = None):
 # ---------- utilities ----------
 
 
-
 @bot.command(name="pascha")
-async def pascha(ctx, arg: str | None = None):
+async def pascha(ctx, rok: int | None = None):
     """
     Oblicza biblijną datę Paschy (14 Nisan) wg astronomicznych nowiów i równonocy.
-    - !pascha → bieżący rok
-    - !pascha 2025 → konkretny rok
-    - !pascha all → zestawienie 2020–2030
+    Użycie:
+      !pascha        → bieżący rok
+      !pascha 2025   → konkretny rok
+      !pascha all    → tabela 2020–2030
     """
     def oblicz_pasche(rok: int):
-        # równonoc wiosenna
+        # Równonoc wiosenna (pierwsza po 1 stycznia)
         eq = ephem.localtime(ephem.next_equinox(f"{rok}/1/1"))
-        # pierwszy nów po równonocy
+        # Pierwszy nów po równonocy
         new_moon = ephem.localtime(ephem.next_new_moon(eq))
-        # 14 Nisan = 13 dni po nowiu
+        # 14 Nisan = 13 dni po nowiu (pełnia)
         pascha_date = new_moon + datetime.timedelta(days=13)
-        przasniki = pascha_date + datetime.timedelta(days=1)
-        pierwociny = pascha_date + datetime.timedelta(days=2)
-        return eq, new_moon, pascha_date, przasniki, pierwociny
+        return eq, new_moon, pascha_date
 
-    # tryb: zestawienie 2020–2030
-    if arg and arg.lower() == "all":
+    # Tryb: tabela dla kilku lat
+    if rok and isinstance(rok, str) and rok.lower() == "all":
         desc = []
-        for rok in range(2020, 2031):
-            _, _, pascha, przasniki, pierwociny = oblicz_pasche(rok)
-            desc.append(
-                f"**{rok}** — Pascha 🌕 {pascha.strftime('%d %b')}, "
-                f"Przaśniki 🍞 {przasniki.strftime('%d %b')}, "
-                f"Pierwociny 🌾 {pierwociny.strftime('%d %b')}"
-            )
+        for y in range(2020, 2031):
+            _, _, pascha = oblicz_pasche(y)
+            desc.append(f"**{y}** — 🌕 {pascha.strftime('%d %B %Y')}")
         embed = discord.Embed(
-            title="📆 Biblijna Pascha — lata 2020 – 2030",
+            title="📅 Biblijna Pascha — lata 2020–2030",
             description="\n".join(desc),
             color=0xFFD700
         )
@@ -1125,23 +1119,20 @@ async def pascha(ctx, arg: str | None = None):
         await ctx.reply(embed=embed)
         return
 
-    # pojedynczy rok
-    if arg and arg.isdigit():
-        rok = int(arg)
-    else:
+    # Pojedynczy rok
+    if not rok or (isinstance(rok, str) and not rok.isdigit()):
         rok = datetime.datetime.utcnow().year
+    rok = int(rok)
 
-    eq, new_moon, pascha_date, przasniki, pierwociny = oblicz_pasche(rok)
+    eq, new_moon, pascha_date = oblicz_pasche(rok)
 
     embed = discord.Embed(
-        title=f"📅 Biblijna Pascha — rok {rok}",
+        title=f"📆 Biblijna Pascha — rok {rok}",
         description=(
             f"🌄 **Równonoc wiosenna:** {eq.strftime('%d %B %Y')}\n"
             f"🌑 **Pierwszy nów po równonocy:** {new_moon.strftime('%d %B %Y')} "
             f"(widoczny wieczorem następnego dnia)\n\n"
-            f"🕊️ **14 Nisan (Pascha):** {pascha_date.strftime('%d %B %Y')}\n"
-            #f"🍞 **15 Nisan (Przaśniki):** {przasniki.strftime('%d %B %Y')}\n"
-            #f"🌾 **16 Nisan (Pierwociny):** {pierwociny.strftime('%d %B %Y')}"
+            f"🌕 **14 Nisan (Pascha):** {pascha_date.strftime('%d %B %Y')}"
         ),
         color=0xFFD700
     )
