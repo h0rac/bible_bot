@@ -1138,8 +1138,8 @@ async def pascha(ctx, arg: str | None = None):
     embed = discord.Embed(
         title=f"📆 Biblijna Pascha — rok {rok}",
         description=(
-            f"🌄 **Równonoc wiosenna:** {eq.strftime('%d %B %Y')}\n"
-            f"🌑 **Pierwszy nów po równonocy:** {new_moon.strftime('%d %B %Y')} "
+            f"🌄 **Równonoc wiosenna:** {eq.strftime('%d %B %Y')}\n\n"
+            f"🌑 **Pierwszy nów po równonocy:** {new_moon.strftime('%d %B %Y')}\n\n"
             f"(widoczny wieczorem następnego dnia)\n\n"
             f"🌕 **14 Nisan (Pascha):** {pascha_date.strftime('%d %B %Y')}"
         ),
